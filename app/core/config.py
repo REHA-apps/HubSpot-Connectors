@@ -1,24 +1,38 @@
-import os
+from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from dotenv import load_dotenv
-
-# Load the .env file
-load_dotenv()
+from pydantic import Field, SecretStr
 
 class Settings(BaseSettings):
-    # These must match the names in your .env file
-    HUBSPOT_CLIENT_ID: str = os.getenv("HUBSPOT_CLIENT_ID", "")
-    HUBSPOT_CLIENT_SECRET: str = os.getenv("HUBSPOT_CLIENT_SECRET", "")
-    HUBSPOT_REDIRECT_URI: str = os.getenv("HUBSPOT_REDIRECT_URI", "")
+    # ... (rest of the class remains same)
+    HUBSPOT_CLIENT_ID: str = Field(default="")
+    HUBSPOT_CLIENT_SECRET: str = Field(default="")
+    HUBSPOT_REDIRECT_URI: str = Field(default="")
 
-    SLACK_BOT_TOKEN: str = os.getenv("SLACK_BOT_TOKEN", "")
-    SLACK_SIGNING_SECRET: str = os.getenv("SLACK_SIGNING_SECRET", "")
+    SLACK_BOT_TOKEN: str = Field(default="")
+    SLACK_SIGNING_SECRET: str = Field(default="")
 
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
-    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
+    SUPABASE_URL: str = Field(default="")
+    SUPABASE_KEY: str = Field(default="")
 
-    # This tells Pydantic to ignore extra fields in your .env
-    model_config = SettingsConfigDict(case_sensitive=True)
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore"
+    )
 
-# Create a single instance of settings to be used everywhere
-settings = Settings()
+    @property
+    def hubspot_client_secret_raw(self) -> str:
+        return self.HUBSPOT_CLIENT_SECRET
+
+    @property
+    def slack_signing_secret_raw(self) -> str:
+        return self.SLACK_SIGNING_SECRET
+
+@lru_cache()
+def get_settings() -> Settings:
+    """Returns a cached instance of the application settings."""
+    return Settings()
+
+# Create a single instance for easier access
+settings = get_settings()

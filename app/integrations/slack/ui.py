@@ -1,9 +1,19 @@
-def build_contact_card(contact_data: dict, ai_summary: str):
-    """
-    Constructs a Slack Block Kit payload for a HubSpot Contact.
+from typing import Dict, Any
+
+def build_contact_card(contact_data: Dict[str, Any], ai_summary: str) -> Dict[str, Any]:
+    """Constructs a Slack Block Kit payload for a HubSpot Contact.
+    
+    Args:
+        contact_data: The raw contact data from HubSpot.
+        ai_summary: A short AI-generated summary/insight about the contact.
+        
+    Returns:
+        A dictionary representing the Slack Block Kit message.
     """
     props = contact_data.get("properties", {})
-    name = f"{props.get('firstname', '')} {props.get('lastname', '')}"
+    firstname = props.get('firstname', '')
+    lastname = props.get('lastname', '')
+    name = f"{firstname} {lastname}".strip() or "Unknown Name"
     email = props.get('email', 'No Email')
     company = props.get('company', 'Unknown Company')
 
@@ -46,7 +56,7 @@ def build_contact_card(contact_data: dict, ai_summary: str):
                     {
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Add Note"},
-                        "value": contact_data.get('id'),
+                        "value": str(contact_data.get('id')),
                         "action_id": "add_note_modal"
                     }
                 ]

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crm-connectors"
+version = "0.1.0"
+description = "HubSpot Connector Platform for Slack"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "User", email = "user@example.com"},
+]
+dependencies = [
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "pydantic[email]>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.1",
+    "supabase>=2.12.0",
+    "uvicorn[standard]>=0.30.0",
+    "tenacity>=8.0.0",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

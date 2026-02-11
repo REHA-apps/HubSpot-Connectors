@@ -1,0 +1,49 @@
+├── .pytest_cache
+│   ├── v
+│   │   ├── cache
+│   │   │   ├── lastfailed
+│   │   │   ├── nodeids
+│   ├── CACHEDIR.TAG
+│   ├── README.md
+├── app
+│   ├── api
+│   │   ├── hubspot.py
+│   │   ├── slack.py
+│   ├── core
+│   │   ├── config.py
+│   │   ├── security.py
+│   ├── integrations
+│   │   ├── slack
+│   │   │   ├── actions.py
+│   │   │   ├── client.py
+│   │   │   ├── ui.py
+│   │   ├── base.py
+│   │   ├── client.py
+│   │   ├── schemas.py
+│   ├── models
+│   │   ├── events.py
+│   ├── services
+│   │   ├── __init__.py
+│   │   ├── ai_service.py
+│   │   ├── storage_service.py
+│   ├── utils
+│   │   ├── helpers.py
+│   │   ├── transformers.py
+├── logs
+│   ├── nginx
+├── tests
+│   ├── conftest.py
+│   ├── test_hubspot_models.py
+│   ├── test_security.py
+│   ├── test_transformers.py
+├── .dockerignore
+├── .env
+├── .pre-commit-config.yaml
+├── docker-compose.yml
+├── Dockerfile
+├── main.py
+├── nginx.conf
+├── pyproject.toml
+├── README.md
+├── tree.txt
+├── uv.lock

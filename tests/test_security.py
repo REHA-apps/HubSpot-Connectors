@@ -1,8 +1,7 @@
 import hmac
 import hashlib
 import base64
-from app.core.security import verify_hubspot_signature, verify_slack_signature
-from app.core.config import settings
+from app.core.security import verify_hubspot_signature, from app.core.config import settings
 
 def test_verify_hubspot_signature(monkeypatch):
     """Verify HubSpot signature validation."""

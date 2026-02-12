@@ -3,11 +3,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, SecretStr
 
 class Settings(BaseSettings):
-    # ... (rest of the class remains same)
+    APP_NAME: str = Field(default="HubSpot Connector Platform")
+    APP_DESCRIPTION: str = Field(default="HubSpot Connector Platform")
+    
     HUBSPOT_CLIENT_ID: str = Field(default="")
     HUBSPOT_CLIENT_SECRET: str = Field(default="")
     HUBSPOT_REDIRECT_URI: str = Field(default="")
 
+    SLACK_CLIENT_ID: str = Field(default="")
+    SLACK_CLIENT_SECRET: str = Field(default="")
+    SLACK_REDIRECT_URI: str = Field(default="")
     SLACK_BOT_TOKEN: str = Field(default="")
     SLACK_SIGNING_SECRET: str = Field(default="")
 

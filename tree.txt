@@ -5,33 +5,74 @@
 │   │   │   ├── nodeids
 │   ├── CACHEDIR.TAG
 │   ├── README.md
+├── .ruff_cache
+│   ├── 0.9.0
+│   │   ├── 1056407612753642577
+│   │   ├── 2963352266102950040
+│   │   ├── 6682759384083702402
+│   ├── CACHEDIR.TAG
 ├── app
 │   ├── api
-│   │   ├── hubspot.py
-│   │   ├── slack.py
+│   │   ├── hubspot
+│   │   │   ├── client.py
+│   │   │   ├── oauth_router.py
+│   │   │   ├── schemas.py
+│   │   │   ├── service.py
+│   │   │   ├── webhook_router.py
+│   │   ├── slack
+│   │   │   ├── client.py
+│   │   │   ├── interactions_router.py
+│   │   │   ├── oauth_router.py
+│   │   │   ├── schemas.py
+│   │   │   ├── service.py
+│   │   │   ├── webhook_router.py
+│   │   ├── deps.py
+│   │   ├── router.py
 │   ├── core
 │   │   ├── config.py
-│   │   ├── security.py
+│   │   ├── exceptions.py
+│   │   ├── logging.py
+│   ├── db
+│   │   ├── models.py
+│   │   ├── supabase.py
 │   ├── integrations
+│   │   ├── hubspot
 │   │   ├── slack
-│   │   │   ├── actions.py
 │   │   │   ├── client.py
 │   │   │   ├── ui.py
-│   │   ├── base.py
-│   │   ├── client.py
-│   │   ├── schemas.py
+│   │   ├── ai_service.py
+│   │   ├── base_client.py
+│   │   ├── connector.py
+│   │   ├── oauth.py
+│   │   ├── rate_limit.py
+│   │   ├── security.py
+│   │   ├── webhook.py
 │   ├── models
 │   │   ├── events.py
+│   ├── scripts
+│   │   ├── demo.py
 │   ├── services
 │   │   ├── __init__.py
-│   │   ├── ai_service.py
+│   │   ├── hubspot_service.py
+│   │   ├── slack_service.py
 │   │   ├── storage_service.py
 │   ├── utils
+│   │   ├── constants.py
 │   │   ├── helpers.py
+│   │   ├── parsers.py
+│   │   ├── slack_helpers.py
 │   │   ├── transformers.py
+│   │   ├── variables.py
+│   ├── main.py
+├── docker
 ├── logs
 │   ├── nginx
+├── nginx
 ├── tests
+│   ├── hubspot
+│   ├── slack
+│   │   ├── test_router.py
+│   │   ├── test_service.py
 │   ├── conftest.py
 │   ├── test_hubspot_models.py
 │   ├── test_security.py
@@ -41,7 +82,6 @@
 ├── .pre-commit-config.yaml
 ├── docker-compose.yml
 ├── Dockerfile
-├── main.py
 ├── nginx.conf
 ├── pyproject.toml
 ├── README.md

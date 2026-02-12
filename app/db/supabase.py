@@ -1,35 +1,23 @@
-from typing import Any
+from typing import Mapping, Any
 
-from pydantic import BaseModel
 from supabase import Client, create_client
-
+from app.db.models import Integration, Workspace
 from app.core.config import settings
+from pydantic import BaseModel
+from datetime import datetime
+from app.utils.parsers import coerce_to_str_dict
 
 JSON = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
-# -------------------------------
-# Pydantic models for Supabase tables
-# -------------------------------
-class Workspace(BaseModel):
-    id: str
-    slack_team_id: str
-    slack_bot_token: str | None
+class WorkspaceInstall(BaseModel):
+    id: str | None = None
+    slack_team_id: str | None = None
+    slack_bot_token: str | None = None
+    subscription_id: str | None = None  
+    installed_at: str | None = None
 
 
-class Integration(BaseModel):
-    id: str
-    workspace_id: str
-    provider: str
-    access_token: str
-    refresh_token: str | None
-    portal_id: str | None
-    updated_at: str
-
-
-# -------------------------------
-# StorageService
-# -------------------------------
 class StorageService:
     """Service for handling data storage using Supabase."""
 
@@ -164,3 +152,73 @@ class StorageService:
         except Exception as e:
             print(f"❌ StorageService Update Error: {e}")
             return False
+    
+    @classmethod
+    async def save_workspace_installation(
+        cls,
+        slack_team_id: str,
+        slack_bot_token: str,
+        subscription_id: str
+    ) -> WorkspaceInstall:
+        client = cls.get_client()
+
+        # 1. Enforce one subscription = one install
+        existing_sub = (
+            client.table("workspaces")
+            .select("*")
+            .eq("subscription_id", subscription_id)
+            .execute()
+        )
+
+        if existing_sub.data:
+            raise ValueError("This subscription already has an installed workspace.")
+
+        # 2. Upsert workspace
+        payload = {
+            "slack_team_id": slack_team_id,
+            "slack_bot_token": slack_bot_token,
+            "subscription_id": subscription_id,
+            "installed_at": datetime.utcnow().isoformat()
+        }
+
+        response = (
+            client.table("workspaces")
+            .upsert(payload, on_conflict="slack_team_id")
+            .execute()
+        )
+
+        # 3. Get workspace data safely
+        workspace_data = response.data[0] if response.data and isinstance(response.data[0], dict) else None
+
+        if not workspace_data:
+            raise ValueError("Failed to save workspace installation.")
+
+        # 4. Coerce all values to str | None for WorkspaceInstall
+        coerced_data = {k: str(v) if v is not None else None for k, v in workspace_data.items()}
+
+        return WorkspaceInstall(**coerced_data)
+
+    @classmethod
+    async def get_workspace_by_team_id(cls, team_id: str) -> WorkspaceInstall | None:
+        client = cls.get_client()
+        res = (
+            client.table("workspaces")
+            .select("*")
+            .eq("slack_team_id", team_id)
+            .limit(1)
+            .execute()
+        )
+
+        # 1. Get workspace data safely
+        workspace_data = res.data[0] if res.data and isinstance(res.data[0], dict) else None
+
+        if not workspace_data:
+            return None
+
+        # 2. Coerce all values to str | None for WorkspaceInstall
+        return WorkspaceInstall(**coerce_to_str_dict(workspace_data))
+
+
+def get_db():
+    return create_client("URL", "KEY")
+

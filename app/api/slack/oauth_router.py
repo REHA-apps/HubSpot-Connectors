@@ -1,40 +1,49 @@
-from fastapi import APIRouter
+# app/api/slack/oauth_router.py
+from __future__ import annotations
 
-from app.integrations.oauth import OAuthService
-from app.db.supabase import StorageService
-from fastapi import Query, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Request
+
+from app.core.logging import CorrelationAdapter, get_logger
+from app.services.integration_service import IntegrationService
 
 router = APIRouter(prefix="/slack/oauth", tags=["slack-oauth"])
+logger = get_logger("slack.oauth")
 
 
 @router.get("/callback")
 async def slack_oauth_callback(
+    request: Request,
     code: str = Query(...),
-    state: str = Query(...)
-):
+    state: str | None = Query(default=None),
+) -> dict[str, str]:
+    """Slack OAuth callback.
+
+    state:
+      - workspace_id (HubSpot-first), or
+      - None (Slack-first)
     """
-    Slack OAuth callback.
-    `state` = subscription_id
-    """
+    corr_id: str = getattr(request.state, "corr_id", "evt_unknown")
+    log = CorrelationAdapter(logger, corr_id)
+
+    log.info("Received Slack OAuth callback code=%s state=%s", code, state)
+
     try:
-        token_data = await OAuthService.exchange_slack_token(code)
+        integration_service = IntegrationService(corr_id)
 
-        bot_token = token_data["access_token"]
-        team_id = token_data["team"]["id"]
-
-        await StorageService.save_workspace_installation(
-            slack_team_id=team_id,
-            slack_bot_token=bot_token,
-            subscription_id=state
+        workspace_id = await integration_service.handle_slack_oauth_callback(
+            code=code,
+            state=state,
         )
 
         return {
             "status": "success",
-            "message": f"Slack workspace {team_id} installed."
+            "message": "Slack connected successfully.",
+            "workspace_id": workspace_id,
         }
 
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        log.error("Slack OAuth callback failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Slack OAuth failed") from exc

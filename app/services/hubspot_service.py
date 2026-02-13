@@ -1,49 +1,99 @@
+# app/services/hubspot_service.py
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from app.clients.hubspot_client import HubSpotClient
+from app.core.logging import CorrelationAdapter, get_logger
 from app.db.supabase import StorageService
-from app.api.hubspot.service import HubSpotClient
-from app.integrations.ai_service import AIService
-from app.integrations.slack.ui import build_contact_card
-from app.utils.helpers import send_slack_error, send_slack_response
 
-async def search_contact_and_respond_to_slack(team_id: str, user_query: str, response_url: str):
-    """Background task to search HubSpot and send results to Slack."""
+logger = get_logger("hubspot.service")
 
-    try:
-        integration = await StorageService.get_by_slack_id(team_id)
-        if not integration:
-            await send_slack_error(
-                response_url, "App not connected. Please install via the home page."
-            )
-            return
 
-        token = integration.access_token
-        refresh = integration.refresh_token
-        if not token:
-            await send_slack_error(
-                response_url,
-                "HubSpot access token not found. Please reconnect the app.",
-            )
-            return
-        if not refresh:
-            await send_slack_error(
-                response_url,
-                "HubSpot refresh token not found. Please reconnect the app.",
-            )
-            return
+class HubSpotService:
+    """Domain-level HubSpot service.
 
-        hs_client = HubSpotClient(
-            access_token=token, refresh_token=refresh, slack_team_id=team_id
+    Responsibilities:
+    - Load HubSpot tokens from DB
+    - Create HubSpotClient
+    - Persist refreshed tokens
+    - Expose domain operations (search, create contact, create task)
+    - Keep connectors and routers clean
+    """
+
+    def __init__(self, corr_id: str) -> None:
+        self.corr_id = corr_id
+        self.log = CorrelationAdapter(logger, corr_id)
+        self.storage = StorageService(corr_id=corr_id)
+
+    # ---------------------------------------------------------
+    # Client initialization
+    # ---------------------------------------------------------
+    def _load_tokens(self, workspace_id: str) -> tuple[str, str | None]:
+        integration = self.storage.get_integration_by_workspace_and_provider(
+            workspace_id=workspace_id,
+            provider="hubspot",
         )
-        contact = await hs_client.get_contact_by_email(user_query)
 
-        if not contact:
-            await send_slack_error(response_url, f"No contact found for '{user_query}'")
-            return
+        if not integration:
+            raise ValueError(f"No HubSpot integration for workspace {workspace_id}")
 
-        ai_insight = AIService.generate_contact_insight(contact)
+        if not integration.access_token:
+            raise ValueError("HubSpot integration missing access_token")
 
-        payload = build_contact_card(contact, ai_insight)
-        await send_slack_response(response_url, payload)
+        return integration.access_token, integration.refresh_token
 
-    except Exception as e:
-        print(f"Error in background task: {str(e)}")
-        await send_slack_error(response_url, f"An internal error occurred: {str(e)}")
+    def get_client(self, workspace_id: str) -> HubSpotClient:
+        access_token, refresh_token = self._load_tokens(workspace_id)
+
+        return HubSpotClient(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            corr_id=self.corr_id,
+        )
+
+    # ---------------------------------------------------------
+    # Token persistence
+    # ---------------------------------------------------------
+    def persist_tokens(
+        self,
+        workspace_id: str,
+        new_access: str,
+        new_refresh: str | None,
+    ) -> None:
+        self.storage.update_tokens(
+            workspace_id=workspace_id,
+            provider="hubspot",
+            new_at=new_access,
+            new_rt=new_refresh,
+        )
+
+    # ---------------------------------------------------------
+    # Domain operations
+    # ---------------------------------------------------------
+    async def search_contacts(
+        self, workspace_id: str, query: str
+    ) -> list[dict[str, Any]]:
+        client = self.get_client(workspace_id)
+        return await client.search_contacts(query)
+
+    async def search_deals(self, workspace_id: str, query: str) -> list[dict[str, Any]]:
+        client = self.get_client(workspace_id)
+        return await client.search_deals(query)
+
+    async def create_contact(
+        self,
+        workspace_id: str,
+        properties: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        client = self.get_client(workspace_id)
+        return await client.create_contact(properties)
+
+    async def create_task(
+        self,
+        workspace_id: str,
+        properties: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        client = self.get_client(workspace_id)
+        return await client.create_task(properties)

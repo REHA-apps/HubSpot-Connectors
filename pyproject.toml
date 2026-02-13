@@ -33,14 +33,15 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]  # Tells Hatch to look in the root directory for your code
+packages = ["app"]  # Tells Hatch to look in the root directory for your code
 
 [tool.ruff]
 line-length = 88
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "PL"]
+select = ["E", "F", "I", "UP", "PL", "D"]
+ignore = ["D203", "D213"]
 
 [tool.uv]
 managed = true

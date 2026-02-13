@@ -1,0 +1,4 @@
+# app/utils/constants.py
+UNAUTHORIZED_ERROR = 401
+NOT_FOUND_ERROR = 404
+SUCCESS = 200

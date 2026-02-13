@@ -1,224 +1,160 @@
-from typing import Mapping, Any
+# app/db/supabase.py
+from __future__ import annotations
 
-from supabase import Client, create_client
-from app.db.models import Integration, Workspace
-from app.core.config import settings
-from pydantic import BaseModel
-from datetime import datetime
-from app.utils.parsers import coerce_to_str_dict
+from typing import Any
 
-JSON = dict[str, Any] | list[Any] | str | int | float | bool | None
+from app.core.logging import CorrelationAdapter, get_logger
+from app.db.records import IntegrationRecord, WorkspaceRecord
+from app.db.repository import SupabaseRepository
+from app.db.supabase_client import SupabaseClient
 
-
-class WorkspaceInstall(BaseModel):
-    id: str | None = None
-    slack_team_id: str | None = None
-    slack_bot_token: str | None = None
-    subscription_id: str | None = None  
-    installed_at: str | None = None
+logger = get_logger("storage")
 
 
 class StorageService:
-    """Service for handling data storage using Supabase."""
+    """Domain-level storage API:
+    - workspaces
+    - integrations
+    - token updates
+    """
 
-    _client: Client | None = None
+    def __init__(self, *, corr_id: str | None = None) -> None:
+        self.client = SupabaseClient(corr_id=corr_id)
+        self.log = CorrelationAdapter(logger, corr_id or "storage")
 
-    @classmethod
-    def get_client(cls) -> Client:
-        """Initialize or return the Supabase client."""
-        if cls._client is None:
-            if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
-                raise ValueError("Supabase credentials missing")
-            cls._client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-        return cls._client
-
-    @classmethod
-    async def save_integration(
-        cls, slack_team_id: str, provider: str, data: dict[str, Any]
-    ) -> Integration | dict[str, Any]:
-        """Upsert workspace and integration safely, returning the first
-        integration or {}."""
-
-        client = cls.get_client()
-
-        # Step 1: Upsert Workspace
-        workspace_response = (
-            client.table("workspaces")
-            .upsert(
-                {
-                    "slack_team_id": slack_team_id,
-                    "slack_bot_token": data.get("slack_bot_token"),
-                },
-                on_conflict="slack_team_id",
-            )
-            .execute()
+        self.workspaces = SupabaseRepository[WorkspaceRecord](
+            client=self.client,
+            table="workspaces",
+            model=WorkspaceRecord,
+        )
+        self.integrations = SupabaseRepository[IntegrationRecord](
+            client=self.client,
+            table="integrations",
+            model=IntegrationRecord,
         )
 
-        # Only keep dict items
-        workspace_list: list[dict[str, Any]] = [
-            item for item in (workspace_response.data or []) if isinstance(item, dict)
-        ]
-        if not workspace_list:
-            return {}
+    # -------- Workspaces --------
+    def get_workspace_by_id(self, workspace_id: str) -> WorkspaceRecord | None:
+        self.log.info("Fetching workspace workspace_id=%s", workspace_id)
+        return self.workspaces.fetch_single({"id": workspace_id})
 
-        try:
-            workspace = Workspace(**workspace_list[0])
-        except Exception:
-            return {}
-
-        # Step 2: Upsert Integration
-        integration_payload = {
-            "workspace_id": workspace.id,
-            "provider": provider,
-            "access_token": data.get("access_token"),
-            "refresh_token": data.get("refresh_token"),
-            "portal_id": data.get("portal_id"),
-            "updated_at": "now()",
+    def create_workspace(
+        self,
+        workspace_id: str,
+        primary_email: str | None = None,
+        subscription_id: str | None = None,
+    ) -> WorkspaceRecord:
+        self.log.info(
+            "Creating workspace workspace_id=%s primary_email=%s",
+            workspace_id,
+            primary_email,
+        )
+        payload = {
+            "id": workspace_id,
+            "primary_email": primary_email,
+            "subscription_id": subscription_id,
         }
 
-        response = (
-            client.table("integrations")
-            .upsert(integration_payload, on_conflict="workspace_id,provider")
-            .execute()
+        self.workspaces.upsert(payload)
+
+        return WorkspaceRecord(
+            id=workspace_id,
+            primary_email=primary_email,
+            subscription_id=subscription_id,
         )
 
-        integration_list: list[dict[str, Any]] = [
-            item for item in (response.data or []) if isinstance(item, dict)
-        ]
-        if not integration_list:
-            return {}
-
-        try:
-            return Integration(**integration_list[0])
-        except Exception:
-            return {}
-
-    @classmethod
-    async def get_by_slack_id(
-        cls, slack_team_id: str, provider: str = "hubspot"
-    ) -> Integration | None:
-        """Get the integration for a Slack workspace safely."""
-        client = cls.get_client()
-        response = (
-            client.table("integrations")
-            .select("*, workspaces!inner(slack_team_id, slack_bot_token)")
-            .eq("workspaces.slack_team_id", slack_team_id)
-            .eq("provider", provider)
-            .execute()
-        )
-
-        data_list: list[dict[str, Any]] = [
-            item for item in (response.data or []) if isinstance(item, dict)
-        ]
-        if not data_list:
-            return None
-
-        try:
-            return Integration(**data_list[0])
-        except Exception:
-            return None
-
-    @classmethod
-    async def update_tokens(
-        cls,
+    # -------- Integrations --------
+    def get_integration_by_slack_team_id(
+        self,
         slack_team_id: str,
+    ) -> IntegrationRecord | None:
+        self.log.info("Fetching integration by slack_team_id=%s", slack_team_id)
+        return self.integrations.fetch_single({"slack_team_id": slack_team_id})
+
+    def get_integration_by_workspace_and_provider(
+        self,
+        workspace_id: str,
         provider: str,
-        new_at: str,
-        new_rt: str | None = None,
-    ) -> bool:
-        """Update access/refresh tokens safely."""
-        try:
-            workspace = await cls.get_by_slack_id(slack_team_id, provider)
-            if not workspace:
-                return False
+    ) -> IntegrationRecord | None:
+        self.log.info(
+            "Fetching integration workspace_id=%s provider=%s",
+            workspace_id,
+            provider,
+        )
+        return self.integrations.fetch_single(
+            {"workspace_id": workspace_id, "provider": provider}
+        )
 
-            update_payload: dict[str, Any] = {
-                "access_token": new_at,
-                "updated_at": "now()",
-            }
-            if new_rt:
-                update_payload["refresh_token"] = new_rt
-
-            response = (
-                cls.get_client()
-                .table("integrations")
-                .update(update_payload)
-                .eq("id", workspace.id)
-                .execute()
-            )
-
-            return bool(response.data and len(response.data) > 0)
-
-        except Exception as e:
-            print(f"❌ StorageService Update Error: {e}")
-            return False
-    
-    @classmethod
-    async def save_workspace_installation(
-        cls,
+    def upsert_slack_integration(
+        self,
+        workspace_id: str,
         slack_team_id: str,
         slack_bot_token: str,
-        subscription_id: str
-    ) -> WorkspaceInstall:
-        client = cls.get_client()
-
-        # 1. Enforce one subscription = one install
-        existing_sub = (
-            client.table("workspaces")
-            .select("*")
-            .eq("subscription_id", subscription_id)
-            .execute()
+    ) -> None:
+        self.log.info(
+            "Upserting Slack integration workspace_id=%s slack_team_id=%s",
+            workspace_id,
+            slack_team_id,
         )
-
-        if existing_sub.data:
-            raise ValueError("This subscription already has an installed workspace.")
-
-        # 2. Upsert workspace
         payload = {
+            "workspace_id": workspace_id,
+            "provider": "slack",
             "slack_team_id": slack_team_id,
             "slack_bot_token": slack_bot_token,
-            "subscription_id": subscription_id,
-            "installed_at": datetime.utcnow().isoformat()
         }
+        self.integrations.upsert(payload)
 
-        response = (
-            client.table("workspaces")
-            .upsert(payload, on_conflict="slack_team_id")
-            .execute()
+    def upsert_hubspot_integration(
+        self,
+        workspace_id: str,
+        portal_id: str,
+        access_token: str,
+        refresh_token: str | None,
+    ) -> None:
+        self.log.info(
+            "Upserting HubSpot integration workspace_id=%s portal_id=%s",
+            workspace_id,
+            portal_id,
         )
+        payload: dict[str, Any] = {
+            "workspace_id": workspace_id,
+            "provider": "hubspot",
+            "portal_id": portal_id,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
+        self.integrations.upsert(payload)
 
-        # 3. Get workspace data safely
-        workspace_data = response.data[0] if response.data and isinstance(response.data[0], dict) else None
-
-        if not workspace_data:
-            raise ValueError("Failed to save workspace installation.")
-
-        # 4. Coerce all values to str | None for WorkspaceInstall
-        coerced_data = {k: str(v) if v is not None else None for k, v in workspace_data.items()}
-
-        return WorkspaceInstall(**coerced_data)
-
-    @classmethod
-    async def get_workspace_by_team_id(cls, team_id: str) -> WorkspaceInstall | None:
-        client = cls.get_client()
-        res = (
-            client.table("workspaces")
-            .select("*")
-            .eq("slack_team_id", team_id)
-            .limit(1)
-            .execute()
+    def delete_integration(
+        self,
+        workspace_id: str,
+        provider: str,
+    ) -> None:
+        self.log.info(
+            "Deleting integration workspace_id=%s provider=%s",
+            workspace_id,
+            provider,
         )
+        self.integrations.delete({"workspace_id": workspace_id, "provider": provider})
 
-        # 1. Get workspace data safely
-        workspace_data = res.data[0] if res.data and isinstance(res.data[0], dict) else None
-
-        if not workspace_data:
-            return None
-
-        # 2. Coerce all values to str | None for WorkspaceInstall
-        return WorkspaceInstall(**coerce_to_str_dict(workspace_data))
-
-
-def get_db():
-    return create_client("URL", "KEY")
-
+    # -------- Token updates --------
+    def update_tokens(
+        self,
+        workspace_id: str,
+        provider: str,
+        new_at: str,
+        new_rt: str | None,
+    ) -> None:
+        self.log.info(
+            "Updating tokens workspace_id=%s provider=%s",
+            workspace_id,
+            provider,
+        )
+        payload: dict[str, Any] = {
+            "access_token": new_at,
+            "refresh_token": new_rt,
+        }
+        self.integrations.update(
+            {"workspace_id": workspace_id, "provider": provider},
+            payload,
+        )

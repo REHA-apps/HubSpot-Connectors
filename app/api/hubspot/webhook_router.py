@@ -1,43 +1,41 @@
-from fastapi import APIRouter, HTTPException, Request, Depends
+# app/api/hubspot/webhook_router.py
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from app.connectors.hubspot_connector import HubSpotConnector
+from app.core.logging import CorrelationAdapter, get_logger
 from app.integrations.security import verify_hubspot_signature
-from app.api.deps import get_hubspot_connector
-from app.api.hubspot.service import HubSpotConnector
 
-router = APIRouter(prefix="/hubspot")
+router = APIRouter(prefix="/hubspot", tags=["hubspot-webhooks"])
+logger = get_logger("hubspot.webhooks")
 
-@router.post("/events")
-async def hubspot_events(
+
+async def get_hubspot_connector(request: Request) -> HubSpotConnector:
+    corr_id: str = getattr(request.state, "corr_id", "evt_unknown")
+    team_id = request.headers.get("X-Slack-Team-Id")
+
+    return HubSpotConnector(
+        slack_team_id=team_id,
+        corr_id=corr_id,
+    )
+
+
+@router.post("/webhook", dependencies=[Depends(verify_hubspot_signature)])
+async def hubspot_webhook(
     request: Request,
-    hubspot: HubSpotConnector = Depends(get_hubspot_connector),
-):
-    """Handles incoming HubSpot event webhooks."""
-    signature = request.headers.get("X-HubSpot-Signature")
-    if not signature:
-        raise HTTPException(status_code=401, detail="Missing signature header")
+    connector: HubSpotConnector = Depends(get_hubspot_connector),
+) -> dict[str, str]:
+    corr_id: str = getattr(request.state, "corr_id", "evt_unknown")
+    log = CorrelationAdapter(logger, corr_id)
 
-    body = await request.body()
+    try:
+        payload = await request.json()
+        log.info("Received HubSpot webhook event")
 
-    if not verify_hubspot_signature(signature, body, str(request.url)):
-        raise HTTPException(status_code=401, detail="Invalid signature")
+        result = await connector.handle_event(payload)
+        return {"status": "ok", **result}
 
-    events = await request.json()
-    # Forward events to HubSpotConnector which handles Slack notifications internally
-    for event in events:
-        await hubspot.handle_event(
-            {
-                "contact": event.get("object"),
-                "type": event.get("eventType"),
-                "object_id": event.get("objectId"),
-            },
-            channel="#general",  # Or configure dynamically
-        )
-
-    return {"status": "ok"}
-
-
-@router.post("/uninstall")
-async def hubspot_uninstall(payload: dict):
-    """Handles app uninstallation webhooks from HubSpot."""
-    # TODO: Implement token cleanup in StorageService
-    print("HubSpot App uninstalled:", payload)
-    return {"status": "ok"}
+    except Exception as exc:
+        log.error("HubSpot webhook failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Webhook processing failed")

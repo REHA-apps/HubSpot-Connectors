@@ -3,11 +3,6 @@ services:
     build: .
     env_file:
       - .env
-    volumes:
-      - .:/app
-      - ./logs:/app/logs
-    depends_on:
-      - redis
     restart: always
 
   nginx:
@@ -20,12 +15,3 @@ services:
     depends_on:
       - app
     restart: always
-
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
-    restart: always
-
-volumes:
-  redis_data:

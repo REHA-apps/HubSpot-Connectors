@@ -1,76 +1,59 @@
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Request
-from app.api.slack.schemas import SendMessageSchema
-from app.api.deps import get_slack_connector, get_hubspot_connector
-from app.integrations.security import verify_slack_signature
-from app.services.slack_service import handle_hubspot_contact_search
-from app.api.hubspot.service import HubSpotConnector
-from app.api.slack.service import SlackConnector
+# app/api/slack/webhook_router.py
+from __future__ import annotations
 
-router = APIRouter(prefix="/slack")
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
-@router.post("/send")
-async def send_message(
-    payload: SendMessageSchema,
-    slack: SlackConnector = Depends(get_slack_connector)
-):
-    """Send a simple Slack message via DI connector."""
-    return await slack.send_event({"channel": payload.channel, "text": payload.text})
+from app.core.logging import CorrelationAdapter, get_logger
+from app.security.slack_signature import verify_slack_signature
+from app.services.command_service import CommandService
+from app.services.integration_service import IntegrationService
 
-
-@router.post("/slack-search")
-async def handle_slack_search(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    slack: SlackConnector = Depends(get_slack_connector),
-    hubspot: HubSpotConnector = Depends(get_hubspot_connector),
-):
-    """Handles Slack slash commands to search HubSpot."""
-    form_data = await request.form()
-    user_query = form_data.get("text")
-    team_id = form_data.get("team_id")
-    response_url = form_data.get("response_url")
-
-    if not all([team_id, user_query, response_url]):
-        raise HTTPException(status_code=400, detail="Missing required Slack fields")
-
-    # Run the HubSpot search in background
-    background_tasks.add_task(
-        handle_hubspot_contact_search, team_id, user_query, response_url
-    )
-
-    return {"text": f"🔎 Searching HubSpot for {user_query}..."}
+router = APIRouter(prefix="/slack", tags=["slack-webhooks"])
+logger = get_logger("slack.webhooks")
 
 
 @router.post("/commands")
 async def slack_commands(
     request: Request,
     background_tasks: BackgroundTasks,
-    slack: SlackConnector = Depends(get_slack_connector),
-    hubspot: HubSpotConnector = Depends(get_hubspot_connector),
-):
-    """Endpoint for Slack Slash Commands with signature verification."""
+) -> dict[str, str]:
+    corr_id: str = getattr(request.state, "corr_id", "evt_unknown")
+    log = CorrelationAdapter(logger, corr_id)
+
     body = await request.body()
-    if not verify_slack_signature(request.headers, body):
+
+    # Verify Slack signature
+    if not verify_slack_signature(request.headers, body, corr_id=corr_id):
+        log.error("Invalid Slack signature")
         raise HTTPException(status_code=401, detail="Invalid Slack signature")
 
     form = await request.form()
+
     command = form.get("command")
     text = str(form.get("text", "")).strip()
     team_id = str(form.get("team_id", ""))
     response_url = str(form.get("response_url", ""))
 
-    if command == "/hs-find":
-        if not text:
-            return {"text": "❌ Please provide an email: `/hs-find user@example.com`"}
+    log.info("Received Slack command=%s text=%s team_id=%s", command, text, team_id)
 
-        # Background task triggers HubSpot search via connector
-        background_tasks.add_task(
-            handle_hubspot_contact_search, team_id, text, response_url
+    # Resolve workspace
+    integration_service = IntegrationService(corr_id)
+    try:
+        workspace_id = integration_service.resolve_workspace(team_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Workspace not installed")
+
+    # Delegate to CommandService
+    command_service = CommandService(corr_id)
+
+    try:
+        return await command_service.handle_slack_command(
+            command=command,
+            text=text,
+            workspace_id=workspace_id,
+            response_url=response_url,
+            background_tasks=background_tasks,
         )
-
-        return {
-            "response_type": "ephemeral",
-            "text": f"🔎 Searching HubSpot for *{text}*...",
-        }
-
-    return {"text": "Unknown command received."}
+    except Exception as exc:
+        log.error("Slack command failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Command failed")

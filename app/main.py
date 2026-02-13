@@ -1,42 +1,34 @@
-from fastapi import FastAPI, Depends
+# app/main.py
+from __future__ import annotations
+
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
-from app.core.config import settings
 from app.api.router import api_router
-from app.api.deps import get_hubspot_connector, get_slack_connector
+from app.core.config import settings
+from app.core.logging import CorrelationAdapter, get_logger
 
-# ---------------------------
-# FastAPI app
-# ---------------------------
+logger = get_logger("app.main")
+
 app = FastAPI(title=settings.APP_NAME)
-
-# Include your API routers
 app.include_router(api_router)
 
 
-# ---------------------------
-# Root endpoint
-# ---------------------------
 @app.get("/")
-async def root():
+async def root() -> dict[str, str]:
+    """Basic health check endpoint."""
     return {"message": f"{settings.APP_NAME} is running"}
 
 
-# ---------------------------
-# Startup event
-# ---------------------------
 @app.on_event("startup")
-async def startup_event():
-    """Print all registered routes on startup."""
+async def startup_event() -> None:
+    """Log all registered API routes on startup."""
+    log = CorrelationAdapter(logger, "startup")
+
+    log.info("Application starting up — listing routes")
+
     for route in api_router.routes:
         if isinstance(route, APIRoute):
-            print(f"Path: {route.path} | Name: {route.name}")
+            log.info("Route registered: path=%s name=%s", route.path, route.name)
 
-
-# ---------------------------
-# Dependency injection example
-# ---------------------------
-# Any router can now do:
-# from fastapi import Depends
-# hubspot: HubSpotConnector = Depends(get_hubspot_connector)
-# slack: SlackConnector = Depends(get_slack_connector)
+    log.info("Startup complete")

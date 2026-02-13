@@ -1,65 +1,64 @@
-from pydantic import BaseModel, Field, EmailStr, ConfigDict
-from typing import Optional
+# app/api/hubspot/schemas.py
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
 
 class HubSpotContactProperties(BaseModel):
-    """The data fields within a HubSpot Contact.
-    
-    Attributes:
-        email: The contact's email address.
-        firstname: The contact's first name.
-        lastname: The contact's last name.
-        phone: The contact's phone number.
-        company: The contact's company name.
-        lifecyclestage: The stage of the contact in the lifecycle.
-        lead_score_ai: AI-calculated lead score, aliased to HubSpot's 
-            analytics visit count for demonstration.
+    """Represents the properties of a HubSpot contact.
+
+    This model is used both for:
+    - Incoming HubSpot webhook payloads
+    - Outgoing create/update contact requests
     """
+
     model_config = ConfigDict(populate_by_name=True)
 
     email: EmailStr
-    firstname: Optional[str] = None
-    lastname: Optional[str] = None
-    phone: Optional[str] = None
-    company: Optional[str] = None
-    lifecyclestage: Optional[str] = "subscriber"
-    # Aliasing to a real HubSpot property for demonstration
-    lead_score_ai: Optional[int] = Field(default=None, alias="hs_analytics_num_visits")
+    firstname: str | None = None
+    lastname: str | None = None
+    phone: str | None = None
+    company: str | None = None
+    lifecyclestage: str | None = "subscriber"
+
+    # Aliased to a real HubSpot property for demonstration
+    lead_score_ai: int | None = Field(
+        default=None,
+        alias="hs_analytics_num_visits",
+    )
+
 
 class HubSpotContact(BaseModel):
-    """The wrapper HubSpot uses for API responses.
-    
-    Attributes:
-        id: Unique HubSpot object ID.
-        properties: The contact properties.
-        created_at: ISO timestamp of creation.
-        updated_at: ISO timestamp of last update.
-        archived: Whether the contact is archived.
-    """
-    id: Optional[str] = None
+    """Wrapper for HubSpot contact API responses."""
+
+    id: str | None = None
     properties: HubSpotContactProperties
-    created_at: Optional[datetime] = Field(None, alias="createdAt")
-    updated_at: Optional[datetime] = Field(None, alias="updatedAt")
+
+    created_at: datetime | None = Field(default=None, alias="createdAt")
+    updated_at: datetime | None = Field(default=None, alias="updatedAt")
+
     archived: bool = False
 
+
 class HubSpotTaskProperties(BaseModel):
-    """Fields required to create a Task in the HubSpot CRM.
-    
-    Attributes:
-        hs_task_subject: Subject line of the task.
-        hs_task_body: Detailed body/description of the task.
-        hs_task_status: Status (WAITING, COMPLETED, IN_PROGRESS).
-        hs_task_priority: Priority level (LOW, MEDIUM, HIGH).
-        hs_timestamp: Due date timestamp.
-        hubspot_owner_id: ID of the HubSpot user who owns this task.
-    """
+    """Represents the fields required to create a HubSpot CRM Task."""
+
     hs_task_subject: str
     hs_task_body: str
-    hs_task_status: str = "WAITING"
-    hs_task_priority: str = "MEDIUM"
-    hs_timestamp: str
-    hubspot_owner_id: Optional[str] = None
+
+    hs_task_status: Literal["WAITING", "COMPLETED", "IN_PROGRESS"] = "WAITING"
+    hs_task_priority: Literal["LOW", "MEDIUM", "HIGH"] = "MEDIUM"
+
+    # HubSpot expects a timestamp (ISO or epoch ms)
+    hs_timestamp: datetime
+
+    hubspot_owner_id: str | None = None
+
 
 class HubSpotTaskCreate(BaseModel):
-    """Payload wrapper for creating a HubSpot Task."""
+    """Wrapper for HubSpot task creation payloads."""
+
     properties: HubSpotTaskProperties

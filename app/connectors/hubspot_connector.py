@@ -6,98 +6,75 @@ from typing import Any
 
 from app.connectors.base import Connector
 from app.core.logging import CorrelationAdapter, get_logger
-from app.core.models.events import NormalizedEvent
-from app.services.ai_scoring_service import AIScoringService
-from app.services.channel_service import ChannelService
-from app.services.hubspot_service import HubSpotService
-from app.services.integration_service import IntegrationService
+from app.core.models.channel import Identity, NormalizedEvent, OutboundMessage
 
 logger = get_logger("hubspot.connector")
 
 
 class HubSpotConnector(Connector):
-    """HubSpot connector:
-    - normalizes HubSpot webhook events
-    - resolves workspace + tokens via IntegrationService
-    - delegates HubSpot operations to HubSpotService
-    - delegates Slack/WhatsApp notifications to ChannelService
+    """HubSpot connector (normalization + outbound only).
+
+    Responsibilities:
+    - Normalize HubSpot webhook events
+    - Resolve identity (rare for HubSpot)
+    - Send outbound HubSpot messages (optional)
+    - Handle install/uninstall
+
+    Note:
+    Routing, AI, Slack notifications, and workspace resolution
+    are handled by EventRouter + ChannelService.
+
     """
 
-    def __init__(
-        self,
-        slack_team_id: str | None,
-        corr_id: str,
-    ) -> None:
-        self.slack_team_id = slack_team_id
+    def __init__(self, corr_id: str) -> None:
         self.corr_id = corr_id
         self.log = CorrelationAdapter(logger, corr_id)
-
-        self.integration_service = IntegrationService(corr_id)
-        self.hubspot_service = HubSpotService(corr_id)
-        self.channel_service = ChannelService(corr_id)
-        self.ai_service = AIScoringService()
 
     # ---------------------------------------------------------
     # Normalization
     # ---------------------------------------------------------
     async def normalize_event(
         self,
+        workspace_id: str,
         raw_event: Mapping[str, Any],
     ) -> NormalizedEvent:
         return NormalizedEvent(
-            channel="hubspot",
-            event_type=raw_event.get("type"),
-            user_id=None,
-            raw=raw_event,
+            workspace_id=workspace_id,
+            source="hubspot",
+            event_type=raw_event.get("subscriptionType", "unknown"),
+            identity=Identity(
+                id=str(raw_event.get("objectId", "")),
+                email=raw_event.get("email"),
+                source="hubspot",
+            ),
+            payload=dict(raw_event),
+            timestamp=str(raw_event.get("occurredAt")),
         )
 
     # ---------------------------------------------------------
-    # Inbound event handling
+    # Identity resolution (HubSpot rarely provides user identity)
     # ---------------------------------------------------------
-    async def handle_event(
+    async def resolve_identity(
         self,
         event: NormalizedEvent,
-    ) -> Mapping[str, Any]:
-        self.log.info("Handling HubSpot event type=%s", event.event_type)
-
-        workspace_id = await self.integration_service.resolve_workspace(
-            slack_team_id=self.slack_team_id,
-        )
-
-        hubspot_client = await self.hubspot_service.get_client(workspace_id)
-
-        contact_data = event.raw.get("contact") or {}
-
-        ai_summary = self.ai_service.generate_contact_insight(contact_data)
-
-        await self.channel_service.send_contact_notification(
-            workspace_id=workspace_id,
-            contact_data=contact_data,
-            ai_summary=ai_summary,
-        )
-
-        return {"status": "processed", "ai_summary": ai_summary}
+    ) -> Identity | None:
+        return None
 
     # ---------------------------------------------------------
-    # Outbound events
+    # Outbound communication (HubSpot rarely receives messages)
     # ---------------------------------------------------------
-    async def send_event(
+    async def send_message(
         self,
-        event: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        workspace_id = await self.integration_service.resolve_workspace(
-            slack_team_id=self.slack_team_id,
-        )
-
-        hubspot_client = await self.hubspot_service.get_client(workspace_id)
-
-        return await hubspot_client.create_task(event)
+        message: OutboundMessage,
+    ) -> Mapping[str, Any] | None:
+        self.log.info("HubSpotConnector.send_message called (noop)")
+        return None
 
     # ---------------------------------------------------------
-    # Lifecycle
+    # Installation lifecycle
     # ---------------------------------------------------------
     async def install(self, payload: Mapping[str, Any]) -> None:
-        await self.integration_service.install_hubspot(payload)
+        self.log.info("HubSpot install event received (handled upstream)")
 
     async def uninstall(self, payload: Mapping[str, Any]) -> None:
-        await self.integration_service.uninstall_hubspot(payload)
+        self.log.info("HubSpot uninstall event received (handled upstream)")

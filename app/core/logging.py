@@ -2,10 +2,21 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from collections.abc import MutableMapping
 from typing import Any
 
 LOGGER_NAME = "app"
+
+# ---------------------------------------------------------
+# Shared formatter (UTC timestamps, structured-ish)
+# ---------------------------------------------------------
+DEFAULT_FORMAT = (
+    "%(asctime)sZ | %(levelname)s | %(name)s | corr=%(corr_id)s | %(message)s"
+)
+
+logging.Formatter.converter = time.gmtime  # force UTC timestamps
 
 
 def get_logger(name: str | None = None) -> logging.Logger:
@@ -16,12 +27,12 @@ def get_logger(name: str | None = None) -> logging.Logger:
     logger = logging.getLogger(logger_name)
 
     if not logger.handlers:
-        logger.setLevel(logging.INFO)
+        # Log level from environment (DEV=DEBUG, PROD=INFO)
+        level = os.getenv("LOG_LEVEL", "INFO").upper()
+        logger.setLevel(level)
 
         handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s | %(levelname)s | %(name)s | corr=%(corr_id)s | %(message)s"
-        )
+        formatter = logging.Formatter(DEFAULT_FORMAT)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
@@ -29,18 +40,30 @@ def get_logger(name: str | None = None) -> logging.Logger:
 
 
 class CorrelationAdapter(logging.LoggerAdapter):
-    extra: dict[str, Any]  # override LoggerAdapter's loose typing
+    """Logger adapter that injects correlation IDs into every log entry."""
+
+    extra: dict[str, Any]
 
     def __init__(self, logger: logging.Logger, corr_id: str) -> None:
-        self.extra = {"corr_id": corr_id}
-        super().__init__(logger, self.extra)
+        super().__init__(logger, {"corr_id": corr_id})
 
     def process(
         self,
         msg: str,
         kwargs: MutableMapping[str, Any],
     ) -> tuple[str, MutableMapping[str, Any]]:
-        extra: dict[str, Any] = kwargs.get("extra") or {}
+        extra = kwargs.get("extra") or {}
         extra.setdefault("corr_id", self.extra["corr_id"])
         kwargs["extra"] = extra
         return msg, kwargs
+
+
+# ---------------------------------------------------------
+# Optional helper for exception logging
+# ---------------------------------------------------------
+def log_exception(logger: logging.Logger, corr_id: str, exc: Exception) -> None:
+    """Log an exception with correlation ID, without leaking stack traces
+    unless LOG_LEVEL=DEBUG.
+    """
+    adapter = CorrelationAdapter(logger, corr_id)
+    adapter.error("Exception occurred: %s", exc)

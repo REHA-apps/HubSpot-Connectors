@@ -1,4 +1,4 @@
-# app/security/hubspot_signature.py
+# app/core/security/hubspot_signature.py
 from __future__ import annotations
 
 import base64
@@ -9,6 +9,11 @@ from fastapi import HTTPException, Request
 
 from app.core.config import settings
 from app.core.logging import CorrelationAdapter, get_logger
+from app.utils.constants import (
+    BAD_REQUEST_ERROR,
+    INTERNAL_SERVER_ERROR,
+    UNAUTHORIZED_ERROR,
+)
 
 logger = get_logger("hubspot.security")
 
@@ -21,15 +26,21 @@ async def verify_hubspot_signature(request: Request) -> None:
     signature = request.headers.get("X-HubSpot-Signature")
     if not signature:
         log.error("Missing HubSpot signature header")
-        raise HTTPException(status_code=400, detail="Missing HubSpot signature")
+        raise HTTPException(
+            status_code=BAD_REQUEST_ERROR, detail="Missing HubSpot signature"
+        )
 
     secret = settings.HUBSPOT_CLIENT_SECRET.get_secret_value()
     if not secret:
         log.error("Missing HubSpot client secret")
-        raise HTTPException(status_code=500, detail="Server misconfiguration")
+        raise HTTPException(
+            status_code=INTERNAL_SERVER_ERROR, detail="Server misconfiguration"
+        )
 
     body = await request.body()
-    url = str(request.url)
+
+    # HubSpot signs: scheme + host + path (NO query params)
+    url = f"{request.url.scheme}://{request.url.hostname}{request.url.path}"
 
     signed_data = url.encode() + body
 
@@ -43,6 +54,6 @@ async def verify_hubspot_signature(request: Request) -> None:
 
     if not hmac.compare_digest(computed, signature):
         log.error("HubSpot signature mismatch")
-        raise HTTPException(status_code=401, detail="Invalid signature")
+        raise HTTPException(status_code=UNAUTHORIZED_ERROR, detail="Invalid signature")
 
     log.info("HubSpot signature verified")

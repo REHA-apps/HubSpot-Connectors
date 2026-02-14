@@ -1,10 +1,9 @@
-# app/integrations/slack_ui.py
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
 
-from app.integrations.ai_service import AIService
+from app.integrations.ai_service import AIContactAnalysis
 
 SlackMessage = dict[str, Any]
 SlackBlock = dict[str, Any]
@@ -47,11 +46,27 @@ def score_bar(score: int) -> str:
 
 
 # ------------------------------------------------------------
+# SHARED BLOCK HELPERS
+# ------------------------------------------------------------
+
+
+def header_block(text: str) -> SlackBlock:
+    return {"type": "header", "text": {"type": "plain_text", "text": text}}
+
+
+def markdown_block(text: str) -> SlackBlock:
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+
+
+# ------------------------------------------------------------
 # CONTACT CARD
 # ------------------------------------------------------------
 
 
-def build_contact_card(contact: Mapping[str, Any], ai_summary: str) -> SlackMessage:
+def build_contact_card(
+    contact: Mapping[str, Any],
+    analysis: AIContactAnalysis,
+) -> SlackMessage:
     props = contact.get("properties", {}) or {}
 
     firstname = props.get("firstname", "")
@@ -63,28 +78,17 @@ def build_contact_card(contact: Mapping[str, Any], ai_summary: str) -> SlackMess
     lifecycle_badge = LIFECYCLE_BADGES.get(lifecycle, lifecycle)
 
     visits = props.get("hs_analytics_num_visits", 0)
-    score = AIService.generate_score(props)
-    nba = AIService.next_best_action(props)
 
-    blocks: list[SlackBlock] = [
-        {"type": "header", "text": {"type": "plain_text", "text": name}},
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*Email:* <{email}>\n"
-                    f"*Lifecycle:* {lifecycle_badge}\n"
-                    f"*Engagement:* {visits} visits\n"
-                    f"*Score:* {score_bar(score)}"
-                ),
-            },
-        },
-        {"type": "section", "text": {"type": "mrkdwn", "text": ai_summary}},
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Next Best Action:* {nba}"},
-        },
+    blocks = [
+        header_block(name),
+        markdown_block(
+            f"*Email:* <{email}>\n"
+            f"*Lifecycle:* {lifecycle_badge}\n"
+            f"*Engagement:* {visits} visits\n"
+            f"*Score:* {score_bar(analysis.score)}"
+        ),
+        markdown_block(analysis.insight),
+        markdown_block(f"*Next Best Action:* {analysis.next_best_action}"),
     ]
 
     return {"blocks": blocks}
@@ -95,30 +99,21 @@ def build_contact_card(contact: Mapping[str, Any], ai_summary: str) -> SlackMess
 # ------------------------------------------------------------
 
 
-def build_lead_card(lead: Mapping[str, Any], ai_summary: str) -> SlackMessage:
+def build_lead_card(
+    lead: Mapping[str, Any],
+    analysis: AIContactAnalysis,
+) -> SlackMessage:
     props = lead.get("properties", {})
     firstname = props.get("firstname", "")
     lastname = props.get("lastname", "")
     email = props.get("email", "unknown@example.com")
     name = f"{firstname} {lastname}".strip() or email
 
-    score = AIService.generate_score(props)
-    nba = AIService.next_best_action(props)
-
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"Lead: {name}"}},
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Email:* <{email}>\n*Score:* {score_bar(score)}",
-            },
-        },
-        {"type": "section", "text": {"type": "mrkdwn", "text": ai_summary}},
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Next Best Action:* {nba}"},
-        },
+        header_block(f"Lead: {name}"),
+        markdown_block(f"*Email:* <{email}>\n*Score:* {score_bar(analysis.score)}"),
+        markdown_block(analysis.insight),
+        markdown_block(f"*Next Best Action:* {analysis.next_best_action}"),
     ]
 
     return {"blocks": blocks}
@@ -129,34 +124,25 @@ def build_lead_card(lead: Mapping[str, Any], ai_summary: str) -> SlackMessage:
 # ------------------------------------------------------------
 
 
-def build_deal_card(deal: Mapping[str, Any], ai_summary: str) -> SlackMessage:
+def build_deal_card(
+    deal: Mapping[str, Any],
+    analysis: AIContactAnalysis,
+) -> SlackMessage:
     props = deal.get("properties", {})
     name = props.get("dealname", "Unnamed Deal")
     amount = props.get("amount", "N/A")
     stage = props.get("dealstage", "Unknown")
     stage_emoji = DEAL_STAGE_EMOJI.get(stage, "💼")
 
-    score = AIService.generate_score(props)
-    nba = AIService.next_best_action(props)
-
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"Deal: {name}"}},
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*Amount:* ${amount}\n"
-                    f"*Stage:* {stage_emoji} `{stage}`\n"
-                    f"*Score:* {score_bar(score)}"
-                ),
-            },
-        },
-        {"type": "section", "text": {"type": "mrkdwn", "text": ai_summary}},
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Next Best Action:* {nba}"},
-        },
+        header_block(f"Deal: {name}"),
+        markdown_block(
+            f"*Amount:* ${amount}\n"
+            f"*Stage:* {stage_emoji} `{stage}`\n"
+            f"*Score:* {score_bar(analysis.score)}"
+        ),
+        markdown_block(analysis.insight),
+        markdown_block(f"*Next Best Action:* {analysis.next_best_action}"),
     ]
 
     return {"blocks": blocks}
@@ -167,18 +153,16 @@ def build_deal_card(deal: Mapping[str, Any], ai_summary: str) -> SlackMessage:
 # ------------------------------------------------------------
 
 
-def build_card(obj: Mapping[str, Any], ai_summary: str) -> SlackMessage:
+def build_card(
+    obj: Mapping[str, Any],
+    analysis: AIContactAnalysis,
+) -> SlackMessage:
     props = obj.get("properties", {})
 
     if "dealname" in props:
-        return build_deal_card(obj, ai_summary)
+        return build_deal_card(obj, analysis)
 
     if props.get("lifecyclestage") == "lead":
-        return build_lead_card(obj, ai_summary)
+        return build_lead_card(obj, analysis)
 
-    return build_contact_card(obj, ai_summary)
-
-
-def build_contact_payload(contact: Mapping[str, Any]) -> SlackMessage:
-    ai_summary = AIService.generate_contact_insight(contact)
-    return build_contact_card(contact, ai_summary)
+    return build_contact_card(obj, analysis)

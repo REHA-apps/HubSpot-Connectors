@@ -15,11 +15,12 @@ class BaseClient:
     """Base async client for external APIs.
 
     Features:
-    - shared httpx.AsyncClient (connection pooling)
-    - correlation ID support
-    - structured logging
+    - Shared httpx.AsyncClient (connection pooling)
+    - Correlation ID support
+    - Structured logging
     - Python 3.12 typing
-    - Pyright-clean
+    - Safe error handling
+    - Optional retry support (hook-ready)
     """
 
     _client: httpx.AsyncClient | None = None
@@ -35,12 +36,21 @@ class BaseClient:
         self.corr_id = corr_id or "client_unknown"
         self.log = CorrelationAdapter(logger, self.corr_id)
 
+    # ---------------------------------------------------------
+    # Shared HTTP client (connection pooling)
+    # ---------------------------------------------------------
     @classmethod
     def get_client(cls) -> httpx.AsyncClient:
         if cls._client is None:
-            cls._client = httpx.AsyncClient(timeout=10.0)
+            cls._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0),
+                follow_redirects=True,
+            )
         return cls._client
 
+    # ---------------------------------------------------------
+    # Core request method
+    # ---------------------------------------------------------
     async def request(
         self,
         method: str,
@@ -65,8 +75,17 @@ class BaseClient:
                 json=json,
                 data=data,
             )
+
+            # Raise for non-2xx
             response.raise_for_status()
-            payload = response.json()
+
+            # Parse JSON safely
+            try:
+                payload = response.json()
+            except ValueError:
+                self.log.error("Invalid JSON response from %s", url)
+                raise
+
             self.log.info("HTTP %s %s succeeded", method, url)
             return payload
 
@@ -80,10 +99,22 @@ class BaseClient:
             )
             raise
 
+        except httpx.RequestError as exc:
+            self.log.error(
+                "Network error during %s %s: %s",
+                method,
+                url,
+                exc,
+            )
+            raise
+
         except Exception as exc:
             self.log.error("HTTP request failed %s %s: %s", method, url, exc)
             raise
 
+    # ---------------------------------------------------------
+    # Convenience wrappers
+    # ---------------------------------------------------------
     async def get(
         self,
         path: str,

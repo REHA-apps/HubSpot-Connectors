@@ -13,7 +13,7 @@ logger = get_logger("storage")
 
 class StorageService:
     """Pure persistence layer.
-    Synchronous because SupabaseRepository is synchronous.
+    Thin async wrapper around typed Supabase repositories.
     """
 
     def __init__(self, *, corr_id: str | None = None) -> None:
@@ -24,21 +24,24 @@ class StorageService:
             client=self.client,
             table="workspaces",
             model=WorkspaceRecord,
+            corr_id=corr_id or "storage",
         )
+
         self.integrations = SupabaseRepository[IntegrationRecord](
             client=self.client,
             table="integrations",
             model=IntegrationRecord,
+            corr_id=corr_id or "storage",
         )
 
-    # -----------------------------
+    # ---------------------------------------------------------
     # Workspaces
-    # -----------------------------
-    def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None:
+    # ---------------------------------------------------------
+    async def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None:
         self.log.info("Fetching workspace workspace_id=%s", workspace_id)
-        return self.workspaces.fetch_single({"id": workspace_id})
+        return await self.workspaces.fetch_single({"id": workspace_id})
 
-    def upsert_workspace(
+    async def upsert_workspace(
         self,
         workspace_id: str,
         primary_email: str | None = None,
@@ -49,38 +52,99 @@ class StorageService:
             "primary_email": primary_email,
             "subscription_id": subscription_id,
         }
-        self.workspaces.upsert(payload)
-        return WorkspaceRecord(**payload)
 
-    # -----------------------------
+        self.log.info("Upserting workspace id=%s", workspace_id)
+        return await self.workspaces.upsert(payload)
+
+    # ---------------------------------------------------------
     # Integrations
-    # -----------------------------
-    def get_integration(self, **filters) -> IntegrationRecord | None:
-        self.log.info("Fetching integration filters=%s", filters)
-        return self.integrations.fetch_single(filters)
-
-    def upsert_integration(self, payload: dict[str, Any]) -> None:
-        self.log.info("Upserting integration provider=%s", payload.get("provider"))
-        self.integrations.upsert(payload)
-
-    def delete_integration(self, workspace_id: str, provider: str) -> None:
+    # ---------------------------------------------------------
+    async def get_integration(
+        self, workspace_id: str, provider: str
+    ) -> IntegrationRecord | None:
         self.log.info(
-            "Deleting integration workspace_id=%s provider=%s", workspace_id, provider
+            "Fetching integration workspace_id=%s provider=%s", workspace_id, provider
         )
-        self.integrations.delete({"workspace_id": workspace_id, "provider": provider})
+        return await self.integrations.fetch_single(
+            {"workspace_id": workspace_id, "provider": provider}
+        )
 
-    # -----------------------------
+    async def get_integration_by_slack_team_id(
+        self,
+        slack_team_id: str,
+    ) -> IntegrationRecord | None:
+        """Fetch Slack integration by Slack team ID."""
+        self.log.info("Fetching Slack integration slack_team_id=%s", slack_team_id)
+        return await self.integrations.fetch_single(
+            {"provider": "slack", "slack_team_id": slack_team_id}
+        )
+
+    async def get_integration_by_portal_id(
+        self,
+        portal_id: str,
+    ) -> IntegrationRecord | None:
+        """Fetch HubSpot integration by portal_id."""
+        self.log.info("Fetching HubSpot integration portal_id=%s", portal_id)
+        return await self.integrations.fetch_single(
+            {"provider": "hubspot", "portal_id": portal_id}
+        )
+
+    async def get_integrations_for_workspace(
+        self,
+        workspace_id: str,
+    ) -> list[IntegrationRecord]:
+        """Return all integrations for a workspace."""
+        self.log.info("Fetching all integrations for workspace_id=%s", workspace_id)
+        return await self.integrations.fetch_many({"workspace_id": workspace_id})
+
+    async def delete_workspace(
+        self,
+        workspace_id: str,
+    ) -> int:
+        """Delete a workspace by ID.
+        Returns number of rows deleted.
+        """
+        self.log.info("Deleting workspace workspace_id=%s", workspace_id)
+        return await self.workspaces.delete({"id": workspace_id})
+
+    async def list_integrations(self) -> list[IntegrationRecord]:
+        """Return all integrations across all workspaces."""
+        self.log.info("Listing all integrations")
+        return await self.integrations.fetch_many({})
+
+    async def upsert_integration(self, payload: dict[str, Any]) -> IntegrationRecord:
+        self.log.info("Upserting integration provider=%s", payload.get("provider"))
+        return await self.integrations.upsert(payload)
+
+    async def delete_integration(self, workspace_id: str, provider: str) -> int:
+        self.log.info(
+            "Deleting integration workspace_id=%s provider=%s",
+            workspace_id,
+            provider,
+        )
+        return await self.integrations.delete(
+            {"workspace_id": workspace_id, "provider": provider}
+        )
+
+    # ---------------------------------------------------------
     # Token updates
-    # -----------------------------
-    def update_tokens(
+    # ---------------------------------------------------------
+    async def update_tokens(
         self,
         workspace_id: str,
         provider: str,
         new_at: str,
         new_rt: str | None,
-    ) -> None:
+    ) -> IntegrationRecord | None:
         payload = {"access_token": new_at, "refresh_token": new_rt}
-        self.integrations.update(
+
+        self.log.info(
+            "Updating tokens workspace_id=%s provider=%s",
+            workspace_id,
+            provider,
+        )
+
+        return await self.integrations.update(
             {"workspace_id": workspace_id, "provider": provider},
             payload,
         )

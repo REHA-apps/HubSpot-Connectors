@@ -11,6 +11,9 @@ from app.db.protocols import SupabaseRow
 logger = get_logger("utils.parsers")
 
 
+# ---------------------------------------------------------
+# Slack command parsing
+# ---------------------------------------------------------
 def parse_slack_command_text(
     text: str,
     *,
@@ -19,8 +22,11 @@ def parse_slack_command_text(
     """Parse Slack slash command text into key=value pairs.
 
     Example:
-        "email=john@example.com stage=lead" ->
-        {"email": "john@example.com", "stage": "lead"}
+        "email=john@example.com stage=lead"
+        → {"email": "john@example.com", "stage": "lead"}
+
+    Supports quoted values:
+        'name="John Doe" role=admin'
 
     """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")
@@ -38,19 +44,38 @@ def parse_slack_command_text(
         return {}
 
 
+# ---------------------------------------------------------
+# Coercion helpers
+# ---------------------------------------------------------
 def coerce_to_str_dict(
     data: Mapping[str, Any],
     *,
     corr_id: str | None = None,
 ) -> dict[str, str | None]:
-    """Convert mapping values to str | None."""
+    """Convert mapping values to str | None.
+
+    Useful for normalizing HubSpot or Slack payloads before persistence.
+    """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")
 
-    result = {k: (str(v) if v is not None else None) for k, v in data.items()}
+    result = {
+        key: (str(value) if value is not None else None) for key, value in data.items()
+    }
+
     log.debug("Coerced mapping to str dict: %s", result)
     return result
 
 
+def to_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+# ---------------------------------------------------------
+# Supabase row validation
+# ---------------------------------------------------------
 def validate_supabase_row(
     data: SupabaseRow,
     required: Iterable[str],
@@ -58,11 +83,12 @@ def validate_supabase_row(
     corr_id: str | None = None,
 ) -> None:
     """Validate that required fields exist in a Supabase row.
+
     Raises ValueError if missing.
     """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")
 
-    missing = [key for key in required if key not in data.keys()]
+    missing = [key for key in required if key not in data]
     if missing:
         log.error("Supabase row missing required fields: %s", missing)
         raise ValueError(f"Missing required fields: {missing}")

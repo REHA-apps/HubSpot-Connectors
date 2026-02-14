@@ -2,65 +2,131 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
+
+from app.core.logging import CorrelationAdapter, get_logger
+from app.utils.parsers import to_int
+
+logger = get_logger("ai.service")
+
+
+@dataclass(frozen=True)
+class AIContactAnalysis:
+    insight: str
+    score: int
+    next_best_action: str
 
 
 class AIService:
-    """Lightweight AI heuristics for insights, scoring, and next-best-action."""
+    """Lightweight deterministic AI heuristics."""
 
-    @staticmethod
-    def generate_contact_insight(contact: Mapping[str, Any]) -> str:
-        props = contact.get("properties", {})
-        firstname = props.get("firstname", "This contact")
-        company = props.get("company", "Unknown Company")
+    def __init__(self):
+        self.log = logger  # plain logger
+
+    def set_corr_id(self, corr_id: str):
+        self.log = CorrelationAdapter(logger, corr_id)
+
+    # ---------------------------------------------------------
+    # Normalization
+    # ---------------------------------------------------------
+    def normalize_contact_props(self, props: dict[str, Any]) -> dict[str, Any]:
+        numeric_fields = [
+            "hs_analytics_num_visits",
+            "num_associated_deals",
+            "hs_lifecyclestage_lead_score",
+        ]
+
+        for field in numeric_fields:
+            props[field] = to_int(props.get(field))
+
+        return props
+
+    # ---------------------------------------------------------
+    # Insight generation
+    # ---------------------------------------------------------
+    def generate_contact_insight(self, contact: Mapping[str, Any]) -> str:
+        props = self.normalize_contact_props(contact.get("properties", {}))
+
+        firstname = props.get("firstname") or "This contact"
+        company = props.get("company") or "Unknown Company"
         visits = props.get("hs_analytics_num_visits", 0)
 
         insight = f"💡 {firstname} works at {company}."
 
-        if isinstance(visits, int) and visits > 5:
+        if visits > 5:  # noqa: PLR2004
             insight += f" They are highly engaged with {visits} visits."
         else:
             insight += " Engagement is low."
 
         return insight
 
-    @staticmethod
-    def generate_score(props: Mapping[str, Any]) -> int:
+    # ---------------------------------------------------------
+    # Scoring
+    # ---------------------------------------------------------
+    def generate_score(self, props: Mapping[str, Any]) -> int:
+        props = self.normalize_contact_props(dict(props))
+
         score = 0
 
-        if props.get("hs_analytics_num_visits", 0) > 10:
+        visits = props.get("hs_analytics_num_visits", 0)
+        if visits > 10:  # noqa: PLR2004
             score += 40
-        if props.get("lifecyclestage") in (
+
+        if props.get("lifecyclestage") in {
             "marketingqualifiedlead",
             "salesqualifiedlead",
-        ):
+        }:
             score += 30
+
         if props.get("company"):
             score += 10
+
         if props.get("email"):
             score += 10
 
         return min(score, 100)
 
-    @staticmethod
-    def next_best_action(props: Mapping[str, Any]) -> str:
+    # ---------------------------------------------------------
+    # Next-best-action
+    # ---------------------------------------------------------
+    def next_best_action(self, props: Mapping[str, Any]) -> str:
+        props = self.normalize_contact_props(dict(props))
+
         visits = props.get("hs_analytics_num_visits", 0)
         lifecycle = props.get("lifecyclestage")
 
-        if lifecycle == "lead" and visits > 5:
+        if lifecycle == "lead" and visits > 5:  # noqa: PLR2004
             return "📞 Reach out — this lead is warming up."
+
         if lifecycle == "marketingqualifiedlead":
             return "🤝 Hand off to sales — strong MQL."
+
         if lifecycle == "salesqualifiedlead":
             return "📅 Schedule a discovery call."
-        if visits > 15:
+
+        if visits > 15:  # noqa: PLR2004
             return "🔥 High engagement — follow up immediately."
 
         return "📝 Add a note or send a follow-up email."
 
-    @staticmethod
-    def summarize_results(objects: Sequence[Mapping[str, Any]]) -> str:
-        """Produces a short AI-style summary of all results."""
+    # ---------------------------------------------------------
+    # Unified analysis
+    # ---------------------------------------------------------
+    def analyze_contact(self, contact: Mapping[str, Any]) -> AIContactAnalysis:
+        props = contact.get("properties", {})
+        props = self.normalize_contact_props(dict(props))
+
+        return AIContactAnalysis(
+            insight=self.generate_contact_insight(contact),
+            score=self.generate_score(props),
+            next_best_action=self.next_best_action(props),
+        )
+
+    # ---------------------------------------------------------
+    # Summary
+    # ---------------------------------------------------------
+    def summarize_results(self, objects: Sequence[Mapping[str, Any]]) -> str:
         if not objects:
             return "No matching HubSpot records found."
 
@@ -81,60 +147,46 @@ class AIService:
             parts.append(f"{deals} deal(s)")
 
         summary = " • ".join(parts)
-
         return f"🔎 *Summary:* Found {summary} matching your search."
 
-    @staticmethod
-    def top_recommended_actions(objects: Sequence[Mapping[str, Any]]) -> list[str]:
-        """Returns the top 3 recommended actions across all objects."""
+    # ---------------------------------------------------------
+    # Top recommended actions
+    # ---------------------------------------------------------
+    def top_recommended_actions(
+        self,
+        objects: Sequence[Mapping[str, Any]],
+    ) -> list[str]:
         actions = []
 
         for obj in objects:
-            props = obj.get("properties", {})
-            nba = AIService.next_best_action(props)
-            score = AIService.generate_score(props)
+            props = self.normalize_contact_props(dict(obj.get("properties", {})))
+            nba = self.next_best_action(props)
+            score = self.generate_score(props)
             actions.append((score, nba))
 
-        # Sort by score descending
         actions.sort(key=lambda x: x[0], reverse=True)
 
-        # Return top 3 unique actions
         seen = set()
         top = []
         for _, action in actions:
             if action not in seen:
                 top.append(action)
                 seen.add(action)
-            if len(top) == 3:
+            if len(top) == 3:  # noqa: PLR2004
                 break
 
         return top
 
-    @staticmethod
-    def detect_intent(query: str) -> str:
-        """Lightweight intent detection for /hs command.
-        Returns: "contact", "lead", "deal"
-        """
+    # ---------------------------------------------------------
+    # Intent detection
+    # ---------------------------------------------------------
+    def detect_intent(self, query: str) -> str:
         q = query.lower()
 
-        # Deal-like keywords
         if any(k in q for k in ["deal", "renewal", "contract", "pipeline", "amount"]):
             return "deal"
 
-        # Lead-like keywords
         if any(k in q for k in ["lead", "mql", "sql", "prospect"]):
             return "lead"
 
-        # Default → contact
         return "contact"
-
-    @staticmethod
-    def enrich_contact(contact: Mapping[str, Any]) -> dict[str, Any]:
-        props = contact.get("properties", {})
-        return {
-            "insight": AIService.generate_contact_insight(contact),
-            "score": AIService.generate_score(props),
-            "next_best_action": AIService.next_best_action(props),
-        }
-
-    # ai = AIService.enrich_contact(contact)

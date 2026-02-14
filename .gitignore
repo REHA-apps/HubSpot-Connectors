@@ -3,9 +3,11 @@
 # -------------------------
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
 *.pyd
 *.so
+.python-version
 *.egg-info/
 *.egg
 *.log
@@ -16,6 +18,29 @@ __pycache__/
 .venv/
 venv/
 env/
+# uv specific
+uv.lock
+
+# -------------------------
+# Build & Testing Caches
+# -------------------------
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hatch/
+.uv/
+.coverage
+htmlcov/
+.cache/
+# Specific to aiocache if using local storage
+.aiocache/
+
+# -------------------------
+# Database / Redis (Local Dev)
+# -------------------------
+*.db
+*.sqlite3
+dump.rdb  # Redis snapshot (often created if testing aiocache locally)
 
 # -------------------------
 # Build Artifacts
@@ -25,19 +50,12 @@ build/
 *.whl
 
 # -------------------------
-# Cache
-# -------------------------
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
-.hatch/
-.uv/
-
-# -------------------------
 # IDE / Editor
 # -------------------------
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # -------------------------
 # Environment
@@ -57,7 +75,8 @@ nginx/logs/
 # -------------------------
 # Supabase
 # -------------------------
-.supabase/
+.supabase/storage/
+.supabase/db/
 
 # -------------------------
 # OS Files

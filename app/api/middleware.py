@@ -19,7 +19,9 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
+        # ---------------------------------------------------------
         # 1. Extract or generate correlation ID
+        # ---------------------------------------------------------
         corr_id = (
             request.headers.get("X-Correlation-Id") or f"evt_{uuid.uuid4().hex[:12]}"
         )
@@ -27,21 +29,39 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
 
         log = CorrelationAdapter(logger, corr_id)
 
-        # 2. Log incoming request
-        log.info("Incoming request %s %s", request.method, request.url.path)
+        # ---------------------------------------------------------
+        # 2. Optional: skip logging for health checks
+        # ---------------------------------------------------------
+        if request.url.path in {"/health", "/ready", "/live"}:
+            return await call_next(request)
 
-        start = time.time()
+        # ---------------------------------------------------------
+        # 3. Log incoming request
+        # ---------------------------------------------------------
+        content_length = request.headers.get("content-length", "unknown")
+        log.info(
+            "Incoming request %s %s (body=%s bytes)",
+            request.method,
+            request.url.path,
+            content_length,
+        )
+
+        start = time.perf_counter()
 
         try:
             response = await call_next(request)
         except Exception as exc:
-            # 3. Log unhandled exceptions
+            # ---------------------------------------------------------
+            # 4. Log unhandled exceptions with correlation ID
+            # ---------------------------------------------------------
             log.error("Unhandled exception during request: %s", exc)
             raise
 
-        duration_ms = int((time.time() - start) * 1000)
+        duration_ms = int((time.perf_counter() - start) * 1000)
 
-        # 4. Log response details
+        # ---------------------------------------------------------
+        # 5. Log response details
+        # ---------------------------------------------------------
         log.info(
             "Completed request %s %s -> %s (%d ms)",
             request.method,
@@ -50,7 +70,9 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             duration_ms,
         )
 
-        # 5. Add correlation ID to response headers
+        # ---------------------------------------------------------
+        # 6. Add correlation ID to response headers
+        # ---------------------------------------------------------
         response.headers["X-Correlation-Id"] = corr_id
 
         return response

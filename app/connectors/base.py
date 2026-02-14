@@ -13,33 +13,29 @@ from app.core.models.channel import (
 
 
 class Connector(ABC):
-    """Base interface for all channel connectors (Slack, WhatsApp, etc.).
+    """Base interface for all channel connectors (Slack, WhatsApp, Gmail, etc.).
 
     Responsibilities:
     - Normalize inbound events into a common shape
-    - Route events to the correct handler
     - Resolve channel user identity → HubSpot identity
     - Send outbound messages/cards
     - Handle install/uninstall flows
+
+    Note:
+    Routing is handled by EventRouter / ChannelService, not by connectors.
+
     """
 
     # -----------------------------
-    # Inbound event handling
+    # Inbound event normalization
     # -----------------------------
     @abstractmethod
     async def normalize_event(
         self,
+        workspace_id: str,
         raw_event: Mapping[str, Any],
     ) -> NormalizedEvent:
         """Convert raw platform event into a normalized internal event."""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def handle_event(
-        self,
-        event: NormalizedEvent,
-    ) -> Mapping[str, Any] | None:
-        """Process a normalized inbound event."""
         raise NotImplementedError
 
     # -----------------------------

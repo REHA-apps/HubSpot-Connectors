@@ -14,7 +14,8 @@ logger = get_logger("command.service")
 
 
 class CommandService:
-    """Handles Slack slash commands and delegates to ChannelService.
+    """
+    Handles Slack slash commands and delegates to ChannelService.
 
     Responsibilities:
     - Interpret /hs, /hs-contacts, /hs-leads, /hs-deals
@@ -36,8 +37,6 @@ class CommandService:
 
         self.channel_service = ChannelService(
             corr_id=corr_id,
-            ai=self.ai,
-            hubspot=self.hubspot,
             integration_service=IntegrationService(corr_id),
             slack_integration=integration,
         )
@@ -52,39 +51,27 @@ class CommandService:
         channel_id: str,
         background_tasks: BackgroundTasks,
     ) -> dict[str, str]:
-        if not command:
-            self.log.warning("Missing command in Slack payload")
-            return {"text": "Unknown command."}
 
-        self.log.info(
-            "Handling Slack command=%s text=%s workspace_id=%s",
-            command,
-            text,
-            workspace_id,
-        )
+        # 1. Validate command immediately
+        if not command:
+            return {"response_type": "ephemeral", "text": "Unknown command."}
 
         query = text.strip()
         if not query:
             return self._usage_for(command)
-        # Smart intent detection for /hs
+
+        # 2. Resolve command type with minimal logic
+        if command == "/hs":
+            command = "/hs-contacts"
+
         if command not in EXPLICIT_COMMANDS:
-            if command == "/hs":
-                intent = self.ai.detect_intent(query)
-                self.log.info("Detected intent=%s for /hs query=%s", intent, query)
+            return {"response_type": "ephemeral", "text": "Unknown command."}
 
-                match intent:
-                    case "deal":
-                        command = "/hs-deals"
-                    case "lead":
-                        command = "/hs-leads"
-                    case _:
-                        command = "/hs-contacts"
-            else:
-                self.log.warning("Unknown Slack command received: %s", command)
-                return {"text": "Unknown command."}
+        cfg = EXPLICIT_COMMANDS[command]
+        object_type = cfg["object_type"]
+        prefix = cfg["prefix"]
 
-        object_type, prefix = EXPLICIT_COMMANDS[command]
-        # Schedule background search
+        # 3. Schedule ALL heavy work in background
         background_tasks.add_task(
             self.channel_service.search_and_send,
             workspace_id,
@@ -95,7 +82,7 @@ class CommandService:
             self.corr_id,
         )
 
-        # Immediate ephemeral response
+        # 4. Return instantly (Slack requirement)
         return {
             "response_type": "ephemeral",
             "text": f"{prefix} for *{query}*...",

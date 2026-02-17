@@ -63,14 +63,16 @@ def coerce_to_str_dict(
     }
 
     log.debug("Coerced mapping to str dict: %s", result)
+
     return result
 
 
-def to_int(value):
+def to_int(value) -> int | None:    
+    """Convert value to int, returning None on failure."""
     try:
         return int(value)
     except (TypeError, ValueError):
-        return 0
+        return None
 
 
 # ---------------------------------------------------------

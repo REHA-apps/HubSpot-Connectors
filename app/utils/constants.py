@@ -1,12 +1,24 @@
 # app/utils/constants.py
-UNAUTHORIZED_ERROR = 401
-NOT_FOUND_ERROR = 404
-SUCCESS = 200
-BAD_REQUEST_ERROR = 400
-INTERNAL_SERVER_ERROR = 500
+from enum import IntEnum
+from typing import TypedDict
 
-EXPLICIT_COMMANDS = {
-    "/hs-contacts": ("contact", "Searching contacts"),
-    "/hs-leads": ("lead", "Searching leads"),
-    "/hs-deals": ("deal", "Searching deals"),
+class ErrorCode(IntEnum):
+    SUCCESS = 200
+    BAD_REQUEST = 400
+    UNAUTHORIZED = 401
+    NOT_FOUND = 404
+    RATE_LIMIT = 429
+    INTERNAL_ERROR = 500
+    CUSTOM = 600
+
+
+class CommandConfig(TypedDict):
+    object_type: str
+    prefix: str
+
+EXPLICIT_COMMANDS: dict[str, CommandConfig] = {
+    "/hs-contacts": {"object_type": "contacts", "prefix": "Searching contacts"},
+    "/hs-leads": {"object_type": "leads", "prefix": "Searching leads"},
+    "/hs-deals": {"object_type": "deals", "prefix": "Searching deals"},
+    "/hs-companies": {"object_type": "companies", "prefix": "Searching companies"},
 }

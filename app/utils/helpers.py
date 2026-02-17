@@ -76,7 +76,7 @@ class HTTPClient:
 
         if cls._client and not cls._client.is_closed:
             log.info("Closing shared AsyncClient instance")
-            await cls._client.aclose()
+            await cls._client.aclose()  
             cls._client = None
         else:
             log.debug("AsyncClient already closed or not initialized")

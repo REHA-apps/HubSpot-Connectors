@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator,Mapping
 from typing import Any, Protocol, Self, TypedDict
 
 # ---------------------------------------------------------
@@ -12,16 +12,8 @@ type SupabaseList = list[JSONDict]
 
 
 # ---------------------------------------------------------
-# Supabase Row Protocol
-# ---------------------------------------------------------
 class SupabaseRow(Protocol):
-    """A minimal protocol describing a row returned by Supabase.
-
-    Supabase returns dict-like objects, so we only require:
-    - __getitem__
-    - keys()
-    - Mapping behavior
-    """
+    """A minimal protocol describing a row returned by Supabase."""
 
     def __getitem__(self, key: str, /) -> Any: ...
     def keys(self) -> Iterable[str]: ...
@@ -29,29 +21,46 @@ class SupabaseRow(Protocol):
     def __len__(self) -> int: ...
 
 
-# ---------------------------------------------------------
-# TypedDict for stricter static typing (optional)
-# ---------------------------------------------------------
+
 class SupabaseRowDict(TypedDict, total=False):
-    """A TypedDict version of a Supabase row.
+    """
+    A TypedDict version of a Supabase row.
     Useful for autocomplete and static analysis.
+
+    Subclasses can extend this for specific tables.
     """
 
     id: Any
     created_at: Any
     updated_at: Any
-    # Subclasses can extend this
 
-
-# ---------------------------------------------------------
-# Supabase Model Protocol
-# ---------------------------------------------------------
 class SupabaseModel(Protocol):
-    """Protocol for models that can be constructed from a Supabase row."""
+    """
+    Protocol for models that can be constructed from a Supabase row.
+    """
 
     @classmethod
     def from_supabase(cls, data: SupabaseRow) -> Self: ...
 
-
 class SupportsSingle(Protocol):
+    """
+    Protocol for Supabase queries that support `.single()`.
+    """
+
     def single(self) -> Any: ...
+
+
+class SupportsMaybeSingle(Protocol):
+    """
+    Protocol for Supabase queries that support `.maybe_single()`.
+    """
+
+    def maybe_single(self) -> Any: ...
+
+
+class SupportsExecute(Protocol):
+    """
+    Protocol for RPC calls or filters that support `.execute()`.
+    """
+
+    def execute(self) -> Any: ...

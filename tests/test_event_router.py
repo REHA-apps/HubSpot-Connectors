@@ -1,0 +1,33 @@
+# tests/test_event_router.py
+import pytest
+from unittest.mock import AsyncMock, patch
+
+from app.services.event_router import EventRouter
+
+
+@pytest.mark.asyncio
+async def test_route_contact_update(
+    corr_id, integration_service, slack_integration
+):
+    router = EventRouter(
+        corr_id=corr_id,
+        integration_service=integration_service,
+        slack_integration=slack_integration,
+    )
+
+    fake_contact = {
+        "id": "123",
+        "type": "contact",
+        "properties": {"firstname": "Alice"},
+    }
+
+    with patch.object(
+        router.channel_service, "send_slack_card", new=AsyncMock()
+    ) as mock_send:
+        await router.route_contact_update(
+            workspace_id="test_workspace",
+            contact=fake_contact,
+            channel="#general",
+        )
+
+        mock_send.assert_awaited_once()

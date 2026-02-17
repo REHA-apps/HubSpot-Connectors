@@ -1,11 +1,20 @@
 # app/db/records.py
 from __future__ import annotations
 
+from datetime import datetime
+from enum import StrEnum
 from typing import ClassVar
 
 from pydantic import SecretStr
 
 from app.db.base_record import BaseRecord
+
+
+class Provider(StrEnum):
+    SLACK = "slack"
+    HUBSPOT = "hubspot"
+    WHATSAPP = "whatsapp"
+    GMAIL = "gmail"
 
 
 class WorkspaceRecord(BaseRecord):
@@ -20,8 +29,8 @@ class WorkspaceRecord(BaseRecord):
     subscription_id: str | None = None
 
     # Optional metadata
-    created_at: str | None = None
-    updated_at: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class IntegrationRecord(BaseRecord):
@@ -37,7 +46,7 @@ class IntegrationRecord(BaseRecord):
 
     id: str
     workspace_id: str
-    provider: str  # consider replacing with Enum
+    provider: Provider  # now strongly typed
 
     # Slack fields
     slack_team_id: str | None = None
@@ -47,7 +56,15 @@ class IntegrationRecord(BaseRecord):
     portal_id: str | None = None
     access_token: SecretStr | None = None
     refresh_token: SecretStr | None = None
+    channel_id: str | None = None
 
     # Optional metadata
-    created_at: str | None = None
-    updated_at: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    # Convenience helpers
+    def is_slack(self) -> bool:
+        return self.provider == Provider.SLACK
+
+    def is_hubspot(self) -> bool:
+        return self.provider == Provider.HUBSPOT

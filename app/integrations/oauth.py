@@ -36,11 +36,15 @@ class SlackOAuthResult:
 # Custom exceptions
 # ---------------------------------------------------------
 class OAuthExchangeError(Exception):
-    pass
+    """Raised when an OAuth token exchange fails."""
 
 
+# ---------------------------------------------------------
+# OAuth Service
+# ---------------------------------------------------------
 class OAuthService:
-    """Handles OAuth token exchanges for HubSpot and Slack.
+    """
+    Handles OAuth token exchanges for HubSpot and Slack.
 
     Features:
     - correlation ID support
@@ -51,12 +55,14 @@ class OAuthService:
 
     def __init__(self, corr_id: str | None = None) -> None:
         self.log = CorrelationAdapter(logger, corr_id or "oauth")
-        self.client = HTTPClient.get_client()
-
-    # ---------------------------------------------------------
-    # Helpers
-    # ---------------------------------------------------------
+        self.corr_id = corr_id
+        self.client = HTTPClient.get_client(corr_id=corr_id)
+        self.log.info("HTTP client instance: %s", self.client)
+    # -----------------------------------------------------
+    # Internal helper
+    # -----------------------------------------------------
     async def _post_form(self, url: str, data: Mapping[str, Any]) -> Mapping[str, Any]:
+        """POST form-encoded data and return parsed JSON."""
         try:
             resp = await self.client.post(url, data=data)
             resp.raise_for_status()
@@ -65,9 +71,9 @@ class OAuthService:
             self.log.error("OAuth request failed: %s", exc)
             raise OAuthExchangeError(str(exc)) from exc
 
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
     # HubSpot OAuth
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
     async def exchange_hubspot_token(self, code: str) -> HubSpotOAuthResult:
         self.log.info("Exchanging HubSpot OAuth code")
 
@@ -81,7 +87,7 @@ class OAuthService:
                 "code": code,
             },
         )
-
+        self.log.info("HubSpot OAuth scopes granted: %s", payload.get("scope"))
         if "access_token" not in payload:
             self.log.error("Invalid HubSpot OAuth response: %s", payload)
             raise OAuthExchangeError("HubSpot OAuth response missing access_token")
@@ -96,9 +102,9 @@ class OAuthService:
             raw=payload,
         )
 
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
     # Slack OAuth
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
     async def exchange_slack_token(self, code: str) -> SlackOAuthResult:
         self.log.info("Exchanging Slack OAuth code")
 

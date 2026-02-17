@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import CorrelationAdapter, get_logger, get_corr_id
 from app.core.security.slack_signature import verify_slack_signature
 from app.services.integration_service import IntegrationService
-from app.utils.constants import BAD_REQUEST_ERROR
+from app.utils.constants import ErrorCode
 
 router = APIRouter(prefix="/slack", tags=["slack-events"])
 logger = get_logger("slack.events")
@@ -15,13 +15,12 @@ logger = get_logger("slack.events")
     "/events",
     # dependencies=[Depends(verify_slack_signature)],
 )
-async def slack_events(request: Request):
+async def slack_events(request: Request, corr_id: str = Depends(get_corr_id)):
     """Handles Slack Events API callbacks.
     Supports:
     - url_verification
     - app_uninstalled
     """
-    corr_id: str = getattr(request.state, "corr_id", "evt_unknown")
     log = CorrelationAdapter(logger, corr_id)
 
     try:
@@ -31,7 +30,7 @@ async def slack_events(request: Request):
     except Exception as exc:
         log.error("Failed to parse Slack event payload: %s", exc)
         raise HTTPException(
-            status_code=BAD_REQUEST_ERROR, detail="Invalid JSON payload"
+            status_code=ErrorCode.BAD_REQUEST, detail="Invalid JSON payload"
         )
 
     # ---------------------------------------------------------
@@ -74,6 +73,4 @@ async def slack_events(request: Request):
 
         return {"ok": True}
 
-    # Ignore all other events
-    log.info("Slack event ignored (not uninstall)")
     return {"ok": True}

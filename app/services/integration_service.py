@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.core.logging import CorrelationAdapter, get_logger
-from app.db.records import IntegrationRecord
+from app.db.records import IntegrationRecord, Provider
 from app.db.storage_service import StorageService
 from app.integrations.oauth import OAuthService
 
@@ -10,7 +10,8 @@ logger = get_logger("integration.service")
 
 
 class IntegrationService:
-    """Centralized domain logic for:
+    """
+    Centralized domain logic for:
     - Slack-first vs HubSpot-first installs
     - Workspace resolution
     - Integration upserts
@@ -31,7 +32,7 @@ class IntegrationService:
         self.oauth = OAuthService(corr_id=corr_id)
 
         # Typed caches
-        self._integration_cache: dict[tuple[str, str], IntegrationRecord | None] = {}
+        self._integration_cache: dict[tuple[str, Provider], IntegrationRecord | None] = {}
         self._slack_team_cache: dict[str, IntegrationRecord | None] = {}
 
     # ---------------------------------------------------------
@@ -40,7 +41,7 @@ class IntegrationService:
     async def get_integration(
         self,
         workspace_id: str,
-        provider: str,
+        provider: Provider,
     ) -> IntegrationRecord | None:
         key = (workspace_id, provider)
         if key in self._integration_cache:
@@ -75,22 +76,23 @@ class IntegrationService:
         return integration.workspace_id
 
     async def resolve_default_channel(self, workspace_id: str) -> str:
-        """Determine the default Slack channel for this workspace.
+        """
+        Determine the default Slack channel for this workspace.
 
         Priority:
         1. integration.default_channel (if stored)
         2. integration.slack_team_id (fallback)
         """
-        integration = await self.get_integration(workspace_id, provider="slack")
+        integration = await self.get_integration(workspace_id, provider=Provider.SLACK)
         if not integration:
             raise ValueError(f"No Slack integration found for workspace {workspace_id}")
 
-        # 1. Explicit default channel (if your schema supports it)
-        default_channel = getattr(integration, "default_channel", None)
+        # 1. Explicit default channel
+        default_channel = getattr(integration, "channel_id", None)
         if default_channel:
             return default_channel
 
-        # 2. Fallback: Slack team ID (safe default for Slack-first installs)
+        # 2. Fallback: Slack team ID
         slack_team_id = getattr(integration, "slack_team_id", None)
         if slack_team_id:
             return slack_team_id
@@ -103,7 +105,8 @@ class IntegrationService:
     # HubSpot OAuth callback
     # ---------------------------------------------------------
     async def handle_hubspot_oauth_callback(self, code: str, state: str) -> str:
-        """Handles HubSpot OAuth callback.
+        """
+        Handles HubSpot OAuth callback.
         state = Slack team ID (Slack-first) OR workspace ID (HubSpot-first).
         Returns workspace_id.
         """
@@ -125,7 +128,7 @@ class IntegrationService:
         await self.storage.upsert_integration(
             {
                 "workspace_id": workspace_id,
-                "provider": "hubspot",
+                "provider": Provider.HUBSPOT,
                 "portal_id": token.portal_id,
                 "access_token": token.access_token,
                 "refresh_token": token.refresh_token,
@@ -139,7 +142,8 @@ class IntegrationService:
     # Slack OAuth callback
     # ---------------------------------------------------------
     async def handle_slack_oauth_callback(self, code: str, state: str | None) -> str:
-        """Handles Slack OAuth callback.
+        """
+        Handles Slack OAuth callback.
         state = workspace_id (HubSpot-first) OR None (Slack-first)
         Returns workspace_id.
         """
@@ -175,7 +179,7 @@ class IntegrationService:
         await self.storage.upsert_integration(
             {
                 "workspace_id": workspace_id,
-                "provider": "slack",
+                "provider": Provider.SLACK,
                 "slack_team_id": team_id,
                 "slack_bot_token": bot_token,
             }
@@ -188,7 +192,7 @@ class IntegrationService:
     # Uninstall flows
     # ---------------------------------------------------------
     async def uninstall_hubspot(self, workspace_id: str) -> None:
-        await self.storage.delete_integration(workspace_id, provider="hubspot")
+        await self.storage.delete_integration(workspace_id, provider=Provider.HUBSPOT)
 
     async def uninstall_slack(self, workspace_id: str) -> None:
-        await self.storage.delete_integration(workspace_id, provider="slack")
+        await self.storage.delete_integration(workspace_id, provider=Provider.SLACK)

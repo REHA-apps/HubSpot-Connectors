@@ -1,58 +1,72 @@
 # scripts/demo.py
 import asyncio
 import uuid
+from collections.abc import Mapping
+from typing import Any
 
-from app.clients.slack_client import SlackClient
-from app.connectors.hubspot_connector import HubSpotConnector
-from app.connectors.slack_connector import SlackConnector
-from app.core.config import settings
 from app.core.logging import CorrelationAdapter, get_logger
+from app.services.event_router import EventRouter
+from app.services.integration_service import IntegrationService
+from app.integrations.slack_integration import SlackIntegration  # adjust import if needed
 
 logger = get_logger("demo")
 
 
-async def run_demo():
+async def run_demo() -> None:
+    # ---------------------------------------------------------
+    # Correlation ID
+    # ---------------------------------------------------------
     corr_id = f"demo_{uuid.uuid4().hex[:12]}"
     log = CorrelationAdapter(logger, corr_id)
 
-    slack_client = SlackClient(token=settings.SLACK_BOT_TOKEN)
-    slack_connector = SlackConnector(client=slack_client)
+    log.info("Starting demo run with corr_id=%s", corr_id)
 
-    hubspot_connector = HubSpotConnector(
-        slack_team_id="T12345",
-        slack_connector=slack_connector,
+    # ---------------------------------------------------------
+    # Mock integration objects (replace with real DB fetches)
+    # ---------------------------------------------------------
+    integration_service = IntegrationService(corr_id=corr_id)
+
+    # Minimal SlackIntegration mock
+    from pydantic import SecretStr
+
+    slack_integration = SlackIntegration(
+        slack_bot_token=SecretStr("xoxb-your-demo-token"),
+        default_channel="#general",
     )
 
-    contact_event = {
-        "contact": {
-            "id": "123",
-            "properties": {
-                "firstname": "Alice",
-                "lastname": "Smith",
-                "email": "alice@example.com",
-                "company": "Example Corp",
-                "hs_analytics_num_visits": 8,
-            },
+    # ---------------------------------------------------------
+    # Create EventRouter
+    # ---------------------------------------------------------
+    router = EventRouter(
+        corr_id=corr_id,
+        integration_service=integration_service,
+        slack_integration=slack_integration,
+    )
+
+    # ---------------------------------------------------------
+    # Simulated HubSpot contact object
+    # ---------------------------------------------------------
+    contact: Mapping[str, Any] = {
+        "id": "123",
+        "type": "contact",
+        "properties": {
+            "firstname": "Alice",
+            "lastname": "Smith",
+            "email": "alice@example.com",
+            "company": "Example Corp",
+            "hs_analytics_num_visits": 8,
         },
-        "type": "contact.created",
-        "object_id": "123",
-        "corr_id": corr_id,
     }
 
-    log.info("➡️ Sending HubSpot contact event...")
-    hubspot_result = await hubspot_connector.handle_event(
-        contact_event, corr_id=corr_id
+    log.info("➡️ Routing HubSpot contact update to Slack...")
+
+    await router.route_contact_update(
+        workspace_id="demo_workspace",
+        contact=contact,
+        channel="#general",
     )
-    log.info("✅ HubSpotConnector result: %s", hubspot_result)
 
-    slack_event = {
-        "channel": "#general",
-        "text": "Hello from the demo script!",
-        "corr_id": corr_id,
-    }
-
-    log.info("➡️ Sending Slack message...")
-    await slack_connector.send_event(slack_event, corr_id=corr_id)
+    log.info("✅ Demo completed successfully")
 
 
 if __name__ == "__main__":

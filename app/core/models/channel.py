@@ -60,10 +60,22 @@ class OutboundMessage(BaseModel):
     )
 
     workspace_id: str
+
+    # Slack: C..., G..., D...
     channel: str | None = None
+
+    # Slack ephemeral messages
+    user: str | None = None
+
+    # Threading support
+    thread_ts: str | None = None
+
+    # Message content
     text: str | None = None
     blocks: list[dict[str, Any]] | None = None
     attachments: list[dict[str, Any]] | None = None
+
+    # Optional identity (for auditing or routing)
     identity: Identity | None = None
 
     @field_validator("channel")

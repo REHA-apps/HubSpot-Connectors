@@ -6,7 +6,7 @@ from typing import Any
 
 from app.clients.base_client import BaseClient
 from app.core.logging import CorrelationAdapter, get_logger
-
+from fastapi import Depends
 logger = get_logger("slack.client")
 
 
@@ -20,7 +20,7 @@ class SlackClient(BaseClient):
     - No workspace logic
     """
 
-    def __init__(self, token: str, *, corr_id: str | None = None) -> None:
+    def __init__(self, token: str, corr_id: str) -> None:
         self.token = token
 
         super().__init__(
@@ -28,8 +28,7 @@ class SlackClient(BaseClient):
             headers=self._headers(token),
             corr_id=corr_id,
         )
-
-        self.log = CorrelationAdapter(logger, corr_id or "slack_unknown")
+        self.log = CorrelationAdapter(logger, self.corr_id)
 
     # ---------------------------------------------------------
     # Core Slack request wrapper

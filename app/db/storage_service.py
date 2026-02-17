@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.logging import CorrelationAdapter, get_logger
-from app.db.records import IntegrationRecord, WorkspaceRecord
+from app.db.records import IntegrationRecord, WorkspaceRecord, Provider
 from app.db.repository import SupabaseRepository
 from app.db.supabase_client import SupabaseClient
 
@@ -56,14 +56,24 @@ class StorageService:
         self.log.info("Upserting workspace id=%s", workspace_id)
         return await self.workspaces.upsert(payload)
 
+    async def ensure_workspace(self, workspace_id: str) -> WorkspaceRecord:
+        ws = await self.get_workspace(workspace_id)
+        return ws or await self.upsert_workspace(workspace_id)
+
+    async def delete_workspace(self, workspace_id: str) -> int:
+        self.log.info("Deleting workspace workspace_id=%s", workspace_id)
+        return await self.workspaces.delete({"id": workspace_id})
+
     # ---------------------------------------------------------
     # Integrations
     # ---------------------------------------------------------
     async def get_integration(
-        self, workspace_id: str, provider: str
+        self, workspace_id: str, provider: Provider
     ) -> IntegrationRecord | None:
         self.log.info(
-            "Fetching integration workspace_id=%s provider=%s", workspace_id, provider
+            "Fetching integration workspace_id=%s provider=%s",
+            workspace_id,
+            provider,
         )
         return await self.integrations.fetch_single(
             {"workspace_id": workspace_id, "provider": provider}
@@ -73,42 +83,28 @@ class StorageService:
         self,
         slack_team_id: str,
     ) -> IntegrationRecord | None:
-        """Fetch Slack integration by Slack team ID."""
         self.log.info("Fetching Slack integration slack_team_id=%s", slack_team_id)
         return await self.integrations.fetch_single(
-            {"provider": "slack", "slack_team_id": slack_team_id}
+            {"provider": Provider.SLACK, "slack_team_id": slack_team_id}
         )
 
     async def get_integration_by_portal_id(
         self,
         portal_id: str,
     ) -> IntegrationRecord | None:
-        """Fetch HubSpot integration by portal_id."""
         self.log.info("Fetching HubSpot integration portal_id=%s", portal_id)
         return await self.integrations.fetch_single(
-            {"provider": "hubspot", "portal_id": portal_id}
+            {"provider": Provider.HUBSPOT, "portal_id": portal_id}
         )
 
     async def get_integrations_for_workspace(
         self,
         workspace_id: str,
     ) -> list[IntegrationRecord]:
-        """Return all integrations for a workspace."""
         self.log.info("Fetching all integrations for workspace_id=%s", workspace_id)
         return await self.integrations.fetch_many({"workspace_id": workspace_id})
 
-    async def delete_workspace(
-        self,
-        workspace_id: str,
-    ) -> int:
-        """Delete a workspace by ID.
-        Returns number of rows deleted.
-        """
-        self.log.info("Deleting workspace workspace_id=%s", workspace_id)
-        return await self.workspaces.delete({"id": workspace_id})
-
     async def list_integrations(self) -> list[IntegrationRecord]:
-        """Return all integrations across all workspaces."""
         self.log.info("Listing all integrations")
         return await self.integrations.fetch_many({})
 
@@ -116,7 +112,19 @@ class StorageService:
         self.log.info("Upserting integration provider=%s", payload.get("provider"))
         return await self.integrations.upsert(payload)
 
-    async def delete_integration(self, workspace_id: str, provider: str) -> int:
+    async def ensure_integration(
+        self,
+        workspace_id: str,
+        provider: Provider,
+    ) -> IntegrationRecord:
+        integ = await self.get_integration(workspace_id, provider)
+        if integ:
+            return integ
+        return await self.upsert_integration(
+            {"workspace_id": workspace_id, "provider": provider}
+        )
+
+    async def delete_integration(self, workspace_id: str, provider: Provider) -> int:
         self.log.info(
             "Deleting integration workspace_id=%s provider=%s",
             workspace_id,
@@ -126,13 +134,20 @@ class StorageService:
             {"workspace_id": workspace_id, "provider": provider}
         )
 
+    async def delete_all_integrations_for_workspace(self, workspace_id: str) -> int:
+        self.log.info(
+            "Deleting all integrations for workspace_id=%s",
+            workspace_id,
+        )
+        return await self.integrations.delete({"workspace_id": workspace_id})
+
     # ---------------------------------------------------------
     # Token updates
     # ---------------------------------------------------------
     async def update_tokens(
         self,
         workspace_id: str,
-        provider: str,
+        provider: Provider,
         new_at: str,
         new_rt: str | None,
     ) -> IntegrationRecord | None:

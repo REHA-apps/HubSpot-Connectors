@@ -9,17 +9,22 @@ from fastapi import HTTPException, Request
 
 from app.core.config import settings
 from app.core.logging import CorrelationAdapter, get_logger
-from app.utils.constants import (
-    BAD_REQUEST_ERROR,
-    INTERNAL_SERVER_ERROR,
-    UNAUTHORIZED_ERROR,
-)
+from app.utils.constants import ErrorCode
 
 logger = get_logger("hubspot.security")
 
 
 async def verify_hubspot_signature(request: Request) -> None:
-    """FastAPI dependency for verifying HubSpot webhook signatures."""
+    """
+    FastAPI dependency for verifying HubSpot webhook signatures.
+
+    HubSpot signs:
+        scheme + host + path  (NO query params)
+        + raw request body
+
+    Signature header:
+        X-HubSpot-Signature: base64(hmac_sha256(secret, signed_data))
+    """
     corr_id = getattr(request.state, "corr_id", "no-corr-id")
     log = CorrelationAdapter(logger, corr_id)
 
@@ -27,19 +32,23 @@ async def verify_hubspot_signature(request: Request) -> None:
     if not signature:
         log.error("Missing HubSpot signature header")
         raise HTTPException(
-            status_code=BAD_REQUEST_ERROR, detail="Missing HubSpot signature"
+            status_code=ErrorCode.BAD_REQUEST,
+            detail="Missing HubSpot signature",
         )
 
     secret = settings.HUBSPOT_CLIENT_SECRET.get_secret_value()
     if not secret:
         log.error("Missing HubSpot client secret")
         raise HTTPException(
-            status_code=INTERNAL_SERVER_ERROR, detail="Server misconfiguration"
+            status_code=ErrorCode.INTERNAL_ERROR,
+            detail="Server misconfiguration",
         )
 
+    # Raw body (bytes)
     body = await request.body()
 
-    # HubSpot signs: scheme + host + path (NO query params)
+    # HubSpot signs: scheme + host + path (no query params)
+    # request.url.hostname is correct (not .netloc)
     url = f"{request.url.scheme}://{request.url.hostname}{request.url.path}"
 
     signed_data = url.encode() + body
@@ -54,6 +63,9 @@ async def verify_hubspot_signature(request: Request) -> None:
 
     if not hmac.compare_digest(computed, signature):
         log.error("HubSpot signature mismatch")
-        raise HTTPException(status_code=UNAUTHORIZED_ERROR, detail="Invalid signature")
+        raise HTTPException(
+            status_code=ErrorCode.UNAUTHORIZED,
+            detail="Invalid signature",
+        )
 
     log.info("HubSpot signature verified")

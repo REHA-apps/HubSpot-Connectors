@@ -4,9 +4,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
+from fastapi import Depends
 
 from app.core.logging import CorrelationAdapter, get_logger
 from app.services.channel_service import ChannelService
+from app.services.integration_service import IntegrationService
 
 logger = get_logger("event.router")
 
@@ -20,10 +22,14 @@ class EventRouter:
     - Delegate to ChannelService for AI + UI + outbound delivery
     """
 
-    def __init__(self, corr_id: str) -> None:
-        self.corr_id = corr_id
+    def __init__(self, corr_id: str, integration_service: IntegrationService, slack_integration) -> None:
+        self.corr_id = corr_id 
         self.log = CorrelationAdapter(logger, corr_id)
-        self.channel_service = ChannelService(corr_id)
+        self.channel_service = ChannelService(
+            corr_id=corr_id,
+            integration_service=integration_service,
+            slack_integration=slack_integration
+        )
 
     # ---------------------------------------------------------
     # HubSpot contact updated → Slack
@@ -75,7 +81,8 @@ class EventRouter:
             obj.get("id"),
             channel,
         )
-
+        
+    
         return await self.channel_service.send_slack_card(
             workspace_id=workspace_id,
             obj=obj,

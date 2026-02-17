@@ -7,6 +7,7 @@ from typing import Any
 from app.clients.hubspot_client import HubSpotClient
 from app.core.logging import CorrelationAdapter, get_logger
 from app.db.storage_service import StorageService
+from app.db.records import Provider
 
 logger = get_logger("hubspot.service")
 
@@ -33,7 +34,7 @@ class HubSpotService:
     async def _load_tokens(self, workspace_id: str) -> tuple[str, str | None]:
         integration = await self.storage.get_integration(
             workspace_id=workspace_id,
-            provider="hubspot",
+            provider=Provider.HUBSPOT,
         )
 
         if not integration:
@@ -80,7 +81,7 @@ class HubSpotService:
     ) -> None:
         await self.storage.update_tokens(
             workspace_id=workspace_id,
-            provider="hubspot",
+            provider=Provider.HUBSPOT,
             new_at=new_access,
             new_rt=new_refresh,
         )
@@ -88,6 +89,36 @@ class HubSpotService:
     # ---------------------------------------------------------
     # Domain operations
     # ---------------------------------------------------------
+    async def search(
+        self,
+        *,
+        workspace_id: str,
+        object_type: str,
+        query: str,
+    ):
+        """
+        Unified HubSpot search entry point.
+        Delegates to the correct search_* method based on object_type.
+        """
+        object_type = object_type.lower()
+
+        match object_type:
+            case "contacts" | "contact":
+                return await self.search_contacts(workspace_id, query)
+
+            case "leads" | "lead":
+                return await self.search_leads(workspace_id, query)
+
+            case "deals" | "deal":
+                return await self.search_deals(workspace_id, query)
+
+            case "companies" | "company":
+                return await self.search_companies(workspace_id, query)
+
+            case _: 
+                self.log.error("Unknown HubSpot object_type=%s", object_type)
+                return []
+
     async def search_contacts(
         self,
         workspace_id: str,
@@ -112,6 +143,14 @@ class HubSpotService:
         client = await self.get_client(workspace_id)
         return await client.search_leads(query)
 
+    async def search_companies(
+        self,
+        workspace_id: str,
+        query: str,
+    ) -> list[dict[str, Any]]:
+        client = await self.get_client(workspace_id)
+        return await client.search_companies(query)
+    
     async def create_contact(
         self,
         workspace_id: str,
@@ -127,3 +166,15 @@ class HubSpotService:
     ) -> Mapping[str, Any]:
         client = await self.get_client(workspace_id)
         return await client.create_task(properties)
+
+    async def get_contact(self, object_id: str, portal_id: str) -> dict[str, Any]:
+        client = await self.get_client(workspace_id=portal_id)
+        return await client.get_contact(object_id)
+
+    async def get_deal(self, object_id: str, portal_id: str) -> dict[str, Any]:
+        client = await self.get_client(workspace_id=portal_id)
+        return await client.get_deal(object_id)
+
+    async def get_company(self, object_id: str, portal_id: str) -> dict[str, Any]:
+        client = await self.get_client(workspace_id=portal_id)
+        return await client.get_company(object_id)

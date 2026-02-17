@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Depends
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import CorrelationAdapter, get_logger, get_corr_id
 from app.core.security.slack_signature import verify_slack_signature
 from app.services.command_service import CommandService
 from app.services.integration_service import IntegrationService
-from app.utils.constants import INTERNAL_SERVER_ERROR, NOT_FOUND_ERROR
+from app.utils.constants import ErrorCode
 
 router = APIRouter(prefix="/slack", tags=["slack-webhooks"])
 logger = get_logger("slack.webhooks")
@@ -19,8 +19,8 @@ logger = get_logger("slack.webhooks")
 async def slack_commands(
     request: Request,
     background_tasks: BackgroundTasks,
+    corr_id: str = Depends(get_corr_id),
 ) -> dict[str, Any]:
-    corr_id = getattr(request.state, "corr_id", "evt_unknown")
     log = CorrelationAdapter(logger, corr_id)
 
     body = await request.body()
@@ -39,11 +39,11 @@ async def slack_commands(
     # Fetch integration ONCE
     integration_service = IntegrationService(corr_id)
     integration = await integration_service.get_integration_by_slack_team_id(team_id)
+
     if not integration:
         raise HTTPException(
-            status_code=NOT_FOUND_ERROR, detail="Workspace not installed"
+            status_code=ErrorCode.NOT_FOUND, detail="Workspace not installed"
         )
-
     command_service = CommandService(corr_id, integration=integration)
 
     try:
@@ -59,4 +59,5 @@ async def slack_commands(
 
     except Exception as exc:
         log.error("Slack command failed: %s", exc)
-        raise HTTPException(status_code=INTERNAL_SERVER_ERROR, detail="Command failed")
+        raise HTTPException(status_code=ErrorCode.INTERNAL_ERROR, detail="Command failed")
+

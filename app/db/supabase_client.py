@@ -19,10 +19,10 @@ T = TypeVar("T")
 class SupabaseClient:
     """Async-friendly wrapper around the synchronous Supabase Python client.
 
-    Key features:
+    Features:
     - Executes all Supabase operations in a threadpool (non-blocking)
-    - Typed fetch_single / fetch_many
-    - Typed insert / update / upsert
+    - Supports select/order/limit
+    - Real upsert (on_conflict)
     - Correlation-ID aware logging
     """
 
@@ -33,62 +33,74 @@ class SupabaseClient:
         )
         self.log = CorrelationAdapter(logger, corr_id or "supabase")
 
-    @property
-    def postgrest(self):
-        return self.client.postgrest
-
-    # ---------------------------------------------------------
-    # Internal helper: run sync Supabase calls in threadpool
-    # ---------------------------------------------------------
     async def _run(self, fn: Callable[[], T]) -> T:
         return await to_thread.run_sync(fn)
 
-    # ---------------------------------------------------------
-    # Fetch single
-    # ---------------------------------------------------------
     async def fetch_single(
         self,
         table: str,
         filters: Mapping[str, Any],
+        *,
+        select: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
         self.log.info("Fetching single row from %s filters=%s", table, filters)
 
-        query = self.client.table(table).select("*")
+        query = self.client.table(table).select(
+            ",".join(select) if select else "*"
+        )
+
         for key, value in filters.items():
             query = query.eq(key, value)
 
-        resp = await self._run(lambda: query.single().execute())
-        raw = resp.data
+        try:
+            resp = await self._run(lambda: query.single().execute())
+        except Exception as e:
+            # Supabase errors include the full REST URL in the exception args
+            self.log.error("SUPABASE ERROR: %s", e)
 
+            # Some versions include the request URL in e.args[0]
+            if e.args:
+                self.log.error("SUPABASE RAW ERROR PAYLOAD: %s", e.args[0])
+
+            raise
+
+
+        raw = resp.data
+        self.log.info("RAW SUPABASE ROW: %s", raw)
         if not isinstance(raw, dict):
             self.log.info("No row found for %s filters=%s", table, filters)
             return None
 
         return raw
 
-    # ---------------------------------------------------------
-    # Fetch many
-    # ---------------------------------------------------------
     async def fetch_many(
         self,
         table: str,
         filters: Mapping[str, Any],
+        *,
+        select: Sequence[str] | None = None,
+        order_by: tuple[str, str] | None = None,
+        limit: int | None = None,
     ) -> Sequence[dict[str, Any]]:
         self.log.info("Fetching many rows from %s filters=%s", table, filters)
 
-        query = self.client.table(table).select("*")
+        query = self.client.table(table).select(
+            ",".join(select) if select else "*"
+        )
+
         for key, value in filters.items():
             query = query.eq(key, value)
 
+        if order_by:
+            col, direction = order_by
+            query = query.order(col, desc=(direction.lower() == "desc"))
+
+        if limit:
+            query = query.limit(limit)
+
         resp = await self._run(lambda: query.execute())
-        data = resp.data or []
+        return cast(Sequence[dict[str, Any]], resp.data or [])
 
-        # Runtime guarantee: Supabase returns list[dict[str, Any]]
-        return cast(Sequence[dict[str, Any]], data)
-
-    # ---------------------------------------------------------
-    # Insert
-    # ---------------------------------------------------------
     async def insert(
         self,
         table: str,
@@ -102,45 +114,41 @@ class SupabaseClient:
         resp = await self._run(lambda: single_builder.single().execute())
         return resp.data
 
-    # ---------------------------------------------------------
-    # Upsert
-    # ---------------------------------------------------------
     async def upsert(
         self,
         table: str,
         payload: Mapping[str, Any],
+        *,
+        on_conflict: str = "id",
     ) -> dict[str, Any] | None:
         self.log.info("Upserting into %s payload=%s", table, payload)
 
-        resp = await self._run(
-            lambda: cast(SupportsSingle, self.client.table(table).insert(payload))
-            .single()
-            .execute()
+        builder = (
+            self.client.table(table)
+            .upsert(payload, on_conflict=on_conflict)
         )
+        single_builder = cast(SupportsSingle, builder)
+
+        resp = await self._run(lambda: single_builder.single().execute())
         return resp.data if isinstance(resp.data, dict) else None
 
-    # ---------------------------------------------------------
-    # Update
-    # ---------------------------------------------------------
-    async def update(self, table, filters, payload):
-        # 1. Update
+    async def update(
+        self,
+        table: str,
+        filters: Mapping[str, Any],
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        self.log.info("Updating %s filters=%s payload=%s", table, filters, payload)
+
         update_query = self.client.table(table).update(payload)
         for key, value in filters.items():
             update_query = update_query.eq(key, value)
 
         await self._run(lambda: update_query.execute())
 
-        # 2. Fetch updated row
-        select_query = self.client.table(table).select("*")
-        for key, value in filters.items():
-            select_query = select_query.eq(key, value)
+        # Fetch updated row
+        return await self.fetch_single(table, filters)
 
-        resp = await self._run(lambda: select_query.single().execute())
-        return resp.data if isinstance(resp.data, dict) else None
-
-    # ------------------------------    ---------------------------
-    # Delete
-    # ---------------------------------------------------------
     async def delete(
         self,
         table: str,
@@ -152,5 +160,23 @@ class SupabaseClient:
         for key, value in filters.items():
             query = query.eq(key, value)
 
-        resp = await self._run(lambda: cast(SupportsSingle, query).single().execute())
+        resp = await self._run(lambda: query.execute())
         return len(resp.data or [])
+
+    async def count(
+        self,
+        table: str,
+        filters: Mapping[str, Any],
+    ) -> int:
+        """Return count of rows matching filters (compatible with all Supabase versions)."""
+        self.log.info("Counting rows in %s filters=%s", table, filters)
+
+        query = self.client.table(table).select("id")
+
+        for key, value in filters.items():
+            query = query.eq(key, value)
+
+        resp = await self._run(lambda: query.execute())
+
+        data = resp.data or []
+        return len(data)

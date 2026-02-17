@@ -8,12 +8,8 @@ import httpx
 from app.clients.base_client import BaseClient
 from app.core.config import settings
 from app.core.logging import CorrelationAdapter, get_logger
-from app.utils.constants import (
-    BAD_REQUEST_ERROR,
-    NOT_FOUND_ERROR,
-    SUCCESS,
-    UNAUTHORIZED_ERROR,
-)
+from fastapi import Depends
+from app.utils.constants import ErrorCode   
 
 logger = get_logger("hubspot.client")
 
@@ -30,11 +26,11 @@ class HubSpotClient(BaseClient):
 
     def __init__(
         self,
+        corr_id: str,
         access_token: str,
         refresh_token: str | None,
-        *,
-        corr_id: str | None = None,
     ) -> None:
+        self.corr_id = corr_id
         self.access_token = access_token
         self.refresh_token = refresh_token
 
@@ -51,7 +47,7 @@ class HubSpotClient(BaseClient):
             corr_id=corr_id,
         )
 
-        self.log = CorrelationAdapter(logger, corr_id or "hubspot")
+        self.log = CorrelationAdapter(logger, self.corr_id)
 
     # ---------------------------------------------------------
     # Public request wrapper with auto-refresh
@@ -75,7 +71,7 @@ class HubSpotClient(BaseClient):
             )
 
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == UNAUTHORIZED_ERROR and self.refresh_token:
+            if exc.response.status_code == ErrorCode.UNAUTHORIZED and self.refresh_token:
                 self.log.warning("HubSpot token expired; attempting refresh")
 
                 new_tokens = await self._refresh_token()
@@ -96,7 +92,7 @@ class HubSpotClient(BaseClient):
                         if isinstance(result, Awaitable):
                             await result
 
-                    return await self._raw_request(
+                    return await super().request(
                         method,
                         path,
                         params=params,
@@ -133,10 +129,10 @@ class HubSpotClient(BaseClient):
             data=data,
         )
 
-        if response.status_code >= BAD_REQUEST_ERROR:
+        if response.status_code >= ErrorCode.BAD_REQUEST:
             self.log.error("HubSpot error %s: %s", response.status_code, response.text)
             response.raise_for_status()
-        if method.upper() == "GET" and response.status_code == NOT_FOUND_ERROR:
+        if method.upper() == "GET" and response.status_code == ErrorCode.NOT_FOUND:
             self.log.info("HubSpot GET %s returned 404 (None)", url)
             return None
 
@@ -168,7 +164,7 @@ class HubSpotClient(BaseClient):
             self.log.error("HubSpot refresh request failed: %s", exc)
             return None
 
-        if resp.status_code != SUCCESS:
+        if resp.status_code != ErrorCode.SUCCESS:
             self.log.error(
                 "HubSpot token refresh failed: status=%s body=%s",
                 resp.status_code,
@@ -186,7 +182,8 @@ class HubSpotClient(BaseClient):
     # ---------------------------------------------------------
     # Headers
     # ---------------------------------------------------------
-    def _headers(self, token: str) -> Mapping[str, str]:
+    @staticmethod
+    def _headers(token: str) -> Mapping[str, str]:
         return {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -216,6 +213,27 @@ class HubSpotClient(BaseClient):
         if properties:
             path += f"?properties={','.join(properties)}"
         return await self.request("GET", path)
+    
+    async def get_contact(self, object_id: str) -> dict[str, Any]:
+        return await self.get_object(
+            "contacts",
+            object_id,
+            properties=["firstname", "lastname", "email", "phone", "lifecyclestage"],
+        )
+
+    async def get_deal(self, object_id: str) -> dict[str, Any]:
+        return await self.get_object(
+            "deals",
+            object_id,
+            properties=["dealname", "amount", "pipeline", "dealstage"],
+        )
+
+    async def get_company(self, object_id: str) -> dict[str, Any]:
+        return await self.get_object(
+            "companies",
+            object_id,
+            properties=["name", "domain", "industry"],
+        )
 
     async def create_contact(self, properties: Mapping[str, Any]) -> dict[str, Any]:
         return await self.create_object("contacts", properties)
@@ -227,38 +245,15 @@ class HubSpotClient(BaseClient):
     # Search: Contacts
     # ---------------------------------------------------------
     async def search_contacts(self, query: str) -> list[dict[str, Any]]:
+        q = query.strip().lower()
+
+        # 1. Try CRM search first
         payload = {
             "filterGroups": [
-                # Exact email match
-                {
-                    "filters": [
-                        {
-                            "propertyName": "email",
-                            "operator": "EQ",
-                            "value": query,
-                        }
-                    ]
-                },
-                # First name token match
-                {
-                    "filters": [
-                        {
-                            "propertyName": "firstname",
-                            "operator": "CONTAINS_TOKEN",
-                            "value": query,
-                        }
-                    ]
-                },
-                # Last name token match
-                {
-                    "filters": [
-                        {
-                            "propertyName": "lastname",
-                            "operator": "CONTAINS_TOKEN",
-                            "value": query,
-                        }
-                    ]
-                },
+                {"filters": [{"propertyName": "email", "operator": "EQ", "value": q}]},
+                {"filters": [{"propertyName": "hs_additional_emails", "operator": "CONTAINS_TOKEN", "value": q}]},
+                {"filters": [{"propertyName": "firstname", "operator": "CONTAINS_TOKEN", "value": q}]},
+                {"filters": [{"propertyName": "lastname", "operator": "CONTAINS_TOKEN", "value": q}]},
             ],
             "limit": 5,
             "properties": [
@@ -268,12 +263,27 @@ class HubSpotClient(BaseClient):
                 "company",
                 "lifecyclestage",
                 "hs_analytics_num_visits",
+                "hs_additional_emails",
             ],
         }
 
         resp = await self.request("POST", "objects/contacts/search", json=payload)
-        return resp.get("results", [])
+        results = resp.get("results", [])
 
+        if results:
+            return results
+
+        # 2. Fallback: identity profile lookup (email → contactId)
+        try:
+            identity_resp = await self.request(
+                "GET",
+                f"objects/contacts/{q}",
+                params={"idProperty": "email"},
+            )
+            return [identity_resp]
+        except Exception:
+            return []
+    
     # ---------------------------------------------------------
     # Search: Deals
     # ---------------------------------------------------------
@@ -293,7 +303,6 @@ class HubSpotClient(BaseClient):
             "limit": 5,
             "properties": ["dealname", "amount", "dealstage", "pipeline"],
         }
-
         resp = await self.request("POST", "objects/deals/search", json=payload)
         return resp.get("results", [])
 
@@ -338,4 +347,41 @@ class HubSpotClient(BaseClient):
         }
 
         resp = await self.request("POST", "objects/leads/search", json=payload)
+        return resp.get("results", [])
+
+    async def search_companies(self, query: str) -> list[dict[str, Any]]:
+        """Search HubSpot companies using CRM v3 search API.
+        Mirrors search_contacts, search_leads, and search_deals.
+        """
+        payload = {
+            "filterGroups": [
+                {
+                    "filters": [
+                        {
+                            "propertyName": "name",
+                            "operator": "EQ",
+                            "value": query,
+                        },
+                        {
+                            "propertyName": "domain",
+                            "operator": "CONTAINS_TOKEN",
+                            "value": query,
+                        },
+                    ]
+                }
+            ],
+            "limit": 5,
+            "properties": [
+                "name",
+                "domain",
+                "industry",
+                "city",
+                "state",
+                "country",
+                "lifecyclestage",
+            ],
+        }
+        self.log.info(f"Search companies: {query}, {payload}")
+
+        resp = await self.request("POST", "objects/companies/search", json=payload)
         return resp.get("results", [])

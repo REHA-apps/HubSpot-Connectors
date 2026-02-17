@@ -1,3 +1,4 @@
+# app/db/supabase_repository.py
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -15,10 +16,12 @@ logger = get_logger("supabase.repo")
 class SupabaseRepository(Generic[R]):
     """Generic async repository for a single Supabase table + record type.
 
-    Improvements:
-    - Repo logs downgraded to DEBUG (client logs remain INFO)
-    - Cleaner, more predictable API
-    - No duplicate logging noise
+    Features:
+    - Strong typing for all CRUD operations
+    - Optional select/order/limit parameters
+    - Optimized exists() check
+    - Clean, predictable API
+    - Debug-level logging (client logs remain INFO)
     """
 
     def __init__(
@@ -36,19 +39,37 @@ class SupabaseRepository(Generic[R]):
     # ---------------------------------------------------------
     # Fetching
     # ---------------------------------------------------------
-    async def fetch_single(self, filters: Mapping[str, Any]) -> R | None:
+    async def fetch_single(
+        self,
+        filters: Mapping[str, Any],
+        *,
+        select: Sequence[str] | None = None,
+    ) -> R | None:
         self.log.debug("fetch_single(%s, filters=%s)", self.table, filters)
 
-        row = await self.client.fetch_single(self.table, filters)
+        row = await self.client.fetch_single(self.table, filters, select=select)
         if row is None:
             return None
 
         return self.model.from_supabase(row)
 
-    async def fetch_many(self, filters: Mapping[str, Any]) -> list[R]:
+    async def fetch_many(
+        self,
+        filters: Mapping[str, Any],
+        *,
+        select: Sequence[str] | None = None,
+        order_by: tuple[str, str] | None = None,  # ("created_at", "desc")
+        limit: int | None = None,
+    ) -> list[R]:
         self.log.debug("fetch_many(%s, filters=%s)", self.table, filters)
 
-        rows: Sequence[SupabaseRow] = await self.client.fetch_many(self.table, filters)
+        rows: Sequence[SupabaseRow] = await self.client.fetch_many(
+            self.table,
+            filters,
+            select=select,
+            order_by=order_by,
+            limit=limit,
+        )
         return [self.model.from_supabase(r) for r in rows]
 
     # ---------------------------------------------------------
@@ -94,11 +115,25 @@ class SupabaseRepository(Generic[R]):
     # ---------------------------------------------------------
     async def delete(self, filters: Mapping[str, Any]) -> int:
         self.log.debug("delete(%s, filters=%s)", self.table, filters)
-
         return await self.client.delete(self.table, filters)
 
     # ---------------------------------------------------------
     # Utility
     # ---------------------------------------------------------
     async def exists(self, filters: Mapping[str, Any]) -> bool:
-        return (await self.fetch_single(filters)) is not None
+        """Optimized existence check using select('id')."""
+        row = await self.client.fetch_single(self.table, filters, select=["id"])
+        return row is not None
+
+    async def first_or_none(
+        self,
+        filters: Mapping[str, Any],
+        *,
+        order_by: tuple[str, str] | None = None,
+    ) -> R | None:
+        rows = await self.fetch_many(filters, order_by=order_by, limit=1)
+        return rows[0] if rows else None
+
+    async def count(self, filters: Mapping[str, Any]) -> int:
+        """Return count of matching rows (Supabase RPC or count(*))."""
+        return await self.client.count(self.table, filters)

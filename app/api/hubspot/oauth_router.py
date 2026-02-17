@@ -1,11 +1,11 @@
 # app/api/hubspot/oauth_router.py
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request   
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import CorrelationAdapter, get_logger, get_corr_id
 from app.services.integration_service import IntegrationService
-from app.utils.constants import BAD_REQUEST_ERROR, INTERNAL_SERVER_ERROR
+from app.utils.constants import ErrorCode
 
 router = APIRouter(prefix="/hubspot/oauth", tags=["hubspot-oauth"])
 logger = get_logger("hubspot.oauth")
@@ -16,9 +16,9 @@ async def hubspot_oauth_callback(
     request: Request,
     code: str = Query(...),
     state: str = Query(...),
+    corr_id: str = Depends(get_corr_id),
 ) -> dict[str, str]:
     """HubSpot OAuth callback."""
-    corr_id: str = getattr(request.state, "corr_id", "evt_unknown")
     log = CorrelationAdapter(logger, corr_id)
 
     log.info("Received HubSpot OAuth callback code=%s state=%s", code, state)
@@ -28,7 +28,7 @@ async def hubspot_oauth_callback(
     if error:
         log.warning("HubSpot OAuth error=%s", error)
         raise HTTPException(
-            status_code=BAD_REQUEST_ERROR, detail=f"HubSpot OAuth error: {error}"
+            status_code=ErrorCode.BAD_REQUEST, detail=f"HubSpot OAuth error: {error}"
         )
 
     try:
@@ -51,5 +51,5 @@ async def hubspot_oauth_callback(
     except Exception as exc:
         log.error("HubSpot OAuth callback failed: %s", exc)
         raise HTTPException(
-            status_code=INTERNAL_SERVER_ERROR, detail="HubSpot OAuth failed"
+            status_code=ErrorCode.INTERNAL_ERROR, detail="HubSpot OAuth failed"
         ) from exc

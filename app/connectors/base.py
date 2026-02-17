@@ -25,6 +25,10 @@ class Connector(ABC):
     Routing is handled by EventRouter / ChannelService, not by connectors.
 
     """
+    supports_cards: bool = False
+    channel_name: str = "unknown"
+    supports_ephemeral: bool = False
+    supports_threading: bool = False
 
     # -----------------------------
     # Inbound event normalization
@@ -72,3 +76,7 @@ class Connector(ABC):
     async def uninstall(self, payload: Mapping[str, Any]) -> None:
         """Handle uninstall/deauthorization."""
         raise NotImplementedError
+
+    def validate_install_payload(self, payload: Mapping[str, Any]) -> None:
+        """Optional: validate OAuth installation payload."""
+        return  # default: no validatio

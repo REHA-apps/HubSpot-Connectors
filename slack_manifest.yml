@@ -1,0 +1,61 @@
+_display_information:
+  name: HubSpot CRM Search
+  description: Search HubSpot contacts, companies, and deals from Slack
+  background_color: "#0052CC"
+
+features:
+  bot_user:
+    display_name: HubSpot CRM Bot
+    always_online: true
+
+  slash_commands:
+    - command: /hs
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/slack/commands
+      description: Smart HubSpot search
+      usage_hint: "[query]"
+      should_escape: false
+
+    - command: /hs-contacts
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/slack/commands
+      description: Search HubSpot contacts
+      usage_hint: "email, name, or query"
+      should_escape: false
+
+    - command: /hs-deals
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/slack/commands
+      description: Search HubSpot deals
+      usage_hint: "deal name or keyword"
+      should_escape: false
+
+    - command: /hs-companies
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/slack/commands
+      description: Search HubSpot companies
+      usage_hint: "company name or domain"
+      should_escape: false
+
+oauth_config:
+  redirect_urls:
+    - https://derisible-jeremy-ambilaterally.ngrok-free.dev/slack/oauth/callback
+  scopes:
+    bot:
+      - commands
+      - chat:write
+      - chat:write.public
+      - users:read
+      - users:read.email
+
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/slack/interactions
+
+  event_subscriptions:
+    request_url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/slack/events
+    bot_events:
+      - message.channels
+      - message.im
+      - app_mention
+
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

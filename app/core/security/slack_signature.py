@@ -4,12 +4,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from collections.abc import Mapping
 
 from fastapi import HTTPException, Request
-from collections.abc import Mapping
 
 from app.core.config import settings
 from app.core.logging import CorrelationAdapter, get_logger
+from app.utils.constants import ErrorCode
 
 logger = get_logger("slack.security")
 
@@ -19,23 +20,62 @@ async def verify_slack_signature(
     body: bytes,
     *,
     corr_id: str | None = None,
-) -> bool:
-    """Verify Slack request signature."""
+) -> None:
+    """
+    Verify Slack request signature.
 
+    Slack signs:
+        v0:{timestamp}:{raw_body}
+
+    Signature header:
+        X-Slack-Signature: v0=hex(hmac_sha256(secret, basestring))
+
+    Timestamp must be within 5 minutes to prevent replay attacks.
+    """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")
 
     timestamp = headers.get("X-Slack-Request-Timestamp")
     signature = headers.get("X-Slack-Signature")
     secret = settings.SLACK_SIGNING_SECRET.get_secret_value()
 
-    if not timestamp or not signature or not secret:
-        log.error("Missing Slack signature headers or signing secret")
-        return False
+    if not timestamp or not signature:
+        log.error("Missing Slack signature headers")
+        raise HTTPException(
+            status_code=ErrorCode.UNAUTHORIZED,
+            detail="Missing Slack signature headers",
+        )
 
-    # Slack signing base string
+    if not secret:
+        log.error("Missing Slack signing secret")
+        raise HTTPException(
+            status_code=ErrorCode.INTERNAL_ERROR,
+            detail="Server misconfiguration",
+        )
+
+    # ---------------------------------------------------------
+    # Replay attack protection (Slack recommends 5 minutes)
+    # ---------------------------------------------------------
+    try:
+        ts = int(timestamp)
+    except ValueError:
+        log.error("Invalid Slack timestamp")
+        raise HTTPException(
+            status_code=ErrorCode.UNAUTHORIZED,
+            detail="Invalid Slack timestamp",
+        )
+
+    if abs(time.time() - ts) > 60 * 5:
+        log.error("Slack request timestamp too old")
+        raise HTTPException(
+            status_code=ErrorCode.UNAUTHORIZED,
+            detail="Slack request timestamp too old",
+        )
+
+    # ---------------------------------------------------------
+    # Compute Slack signature
+    # ---------------------------------------------------------
     basestring = f"v0:{timestamp}:{body.decode()}"
 
-    # Compute HMAC SHA256
     computed = "v0=" + hmac.new(
         secret.encode(),
         basestring.encode(),
@@ -44,6 +84,9 @@ async def verify_slack_signature(
 
     if not hmac.compare_digest(computed, signature):
         log.error("Slack signature mismatch")
-        return False
+        raise HTTPException(
+            status_code=ErrorCode.UNAUTHORIZED,
+            detail="Invalid Slack signature",
+        )
 
-    return True
+    log.info("Slack signature verified")

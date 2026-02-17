@@ -1,0 +1,29 @@
+# tests/test_channel_service.py
+import pytest
+from unittest.mock import AsyncMock, patch
+
+from app.services.channel_service import ChannelService
+
+
+@pytest.mark.asyncio
+async def test_send_slack_card(corr_id, integration_service, slack_integration):
+    service = ChannelService(
+        corr_id=corr_id,
+        integration_service=integration_service,
+        slack_integration=slack_integration,
+    )
+
+    fake_obj = {
+        "id": "123",
+        "type": "contact",
+        "properties": {"firstname": "Alice"},
+    }
+
+    with patch.object(service, "send_slack_message", new=AsyncMock()) as mock_send:
+        await service.send_slack_card(
+            workspace_id="test_workspace",
+            obj=fake_obj,
+            channel="#general",
+        )
+
+        mock_send.assert_awaited_once()

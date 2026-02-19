@@ -1,28 +1,32 @@
 # tests/test_slack_connector.py
-import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.connectors.slack_connector import SlackConnector
+import pytest
+
+from app.connectors.slack.channel import SlackChannel as SlackConnector
 from app.core.models.channel import OutboundMessage
 
 
 @pytest.mark.asyncio
 async def test_slack_connector_send_message(corr_id):
-    fake_client = AsyncMock()
-    connector = SlackConnector(
-        slack_client=fake_client,
-        corr_id=corr_id,
-        default_channel="C123456",
-    )
+    with patch("app.connectors.slack.channel.AsyncWebClient") as MockClient:
+        mock_instance = MockClient.return_value
+        mock_instance.chat_postMessage = AsyncMock(
+            return_value=MagicMock(data={"ok": True})
+        )
 
-    msg = OutboundMessage(
-        workspace_id="test_workspace",
-        channel="#general",
-        text="Hello",
-        blocks=None,
-    )
+        connector = SlackConnector(
+            corr_id,
+            bot_token="xoxb-test",
+        )
 
+        msg = OutboundMessage(
+            workspace_id="test_workspace",
+            destination="C123456",
+            text="Hello",
+            provider_metadata={"blocks": None},
+        )
 
-    await connector.send_message(msg)
+        await connector.send_message(msg)
 
-    fake_client.chat_postMessage.assert_awaited_once()
+        mock_instance.chat_postMessage.assert_awaited_once()

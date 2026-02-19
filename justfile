@@ -72,3 +72,10 @@ check:
     ruff format .
     ruff check .
     uv run pyright
+
+# Remove temporary logs and test artifacts
+clean:
+    if (Test-Path logs) { Remove-Item -Recurse -Force logs }
+    if (Test-Path *.txt) { Remove-Item -Force *.txt }
+    if (Test-Path .pytest_cache) { Remove-Item -Recurse -Force .pytest_cache }
+    if (Test-Path .ruff_cache) { Remove-Item -Recurse -Force .ruff_cache }

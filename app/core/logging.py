@@ -1,107 +1,117 @@
-# app/core/logging.py
 from __future__ import annotations
 
+import json
 import logging
 import os
-import time
+import sys
 import uuid
-import json
-from collections.abc import MutableMapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
+
 from fastapi import Request
 
-LOGGER_NAME = "app"
-
-# ---------------------------------------------------------
-# Log formatters
-# ---------------------------------------------------------
-DEFAULT_FORMAT = (
-    "%(asctime)sZ | %(levelname)s | %(name)s | corr=%(corr_id)s | %(message)s"
-)
-
-logging.Formatter.converter = time.gmtime  # force UTC timestamps
-
+# Settings
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 USE_JSON_LOGS = os.getenv("USE_JSON_LOGS", "false").lower() == "true"
+DEFAULT_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(corr_id)s - %(message)s"
+
+# Global context for correlation IDs
+corr_id_ctx: ContextVar[str] = ContextVar("corr_id", default="none")
 
 
 class JsonFormatter(logging.Formatter):
-    """Optional JSON formatter for structured logs."""
+    """Description:
+    Custom logging formatter that outputs logs in structured JSON format.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
-        data = {
-            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%SZ"),
+        corr_id = getattr(record, "corr_id", corr_id_ctx.get())
+
+        log_data = {
+            "timestamp": self.formatTime(record, self.datefmt),
             "level": record.levelname,
-            "logger": record.name,
-            "corr_id": getattr(record, "corr_id", None),
+            "name": record.name,
             "message": record.getMessage(),
+            "corr_id": corr_id,
         }
-        return json.dumps(data)
+        if record.exc_info:
+            log_data["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_data)
 
 
-def get_logger(name: str | None = None) -> logging.Logger:
-    """Create or retrieve a namespaced logger with correlation-ID support."""
-    logger_name = f"{LOGGER_NAME}.{name}" if name else LOGGER_NAME
-    logger = logging.getLogger(logger_name)
+@contextmanager
+def log_context(corr_id: str):
+    """Description:
+    Context manager that sets the correlation ID for the current execution context.
+    """
+    token = corr_id_ctx.set(corr_id)
+    try:
+        yield
+    finally:
+        corr_id_ctx.reset(token)
+
+
+class ContextFilter(logging.Filter):
+    """Description:
+    Logging filter that injects the current correlation ID from contextvars
+    into every LogRecord.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.corr_id = corr_id_ctx.get()
+        return True
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Description:
+    Configures and retrieves a named logger with context-aware correlation ID support.
+    """
+    logger = logging.getLogger(name)
 
     if not logger.handlers:
         level = os.getenv("LOG_LEVEL", "INFO").upper()
         logger.setLevel(level)
 
-        handler = logging.StreamHandler()
-        formatter = JsonFormatter() if USE_JSON_LOGS else logging.Formatter(DEFAULT_FORMAT)
+        handler = logging.StreamHandler(sys.stdout)
+        handler.addFilter(ContextFilter())
+        formatter = (
+            JsonFormatter() if USE_JSON_LOGS else logging.Formatter(DEFAULT_FORMAT)
+        )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
+
+        # Prevent propagation to root logger
+        logger.propagate = False
 
     return logger
 
 
-# ---------------------------------------------------------
-# Correlation ID extraction
-# ---------------------------------------------------------
-def get_corr_id(request: Request) -> str:
-    corr_id = request.headers.get("X-Correlation-ID")
-    if corr_id:
-        return corr_id
-
-    req_id = request.headers.get("X-Request-ID")
-    if req_id:
-        return req_id
-
-    return uuid.uuid4().hex
-
-
-# ---------------------------------------------------------
-# Logger adapter with bind() support
-# ---------------------------------------------------------
 class CorrelationAdapter(logging.LoggerAdapter):
-    """Logger adapter that injects correlation IDs and supports context binding."""
-
-    extra: dict[str, Any]
+    """Description:
+    DEPRECATED: Maintains backward compatibility for services using explicit corr_id.
+    New code should prefer standard logger with log_context.
+    """
 
     def __init__(self, logger: logging.Logger, corr_id: str, **kwargs: Any) -> None:
-        base = {"corr_id": corr_id}
-        base.update(kwargs)
-        super().__init__(logger, base)
+        self.corr_id = corr_id
+        super().__init__(logger, {"corr_id": corr_id, **kwargs})
 
-    def bind(self, **kwargs: Any) -> "CorrelationAdapter":
-        """Return a new adapter with additional context."""
-        new_extra = {**self.extra, **kwargs}
-        return CorrelationAdapter(self.logger, new_extra["corr_id"], **new_extra)
-
-    def process(
-        self,
-        msg: str,
-        kwargs: MutableMapping[str, Any],
-    ) -> tuple[str, MutableMapping[str, Any]]:
-        extra = kwargs.get("extra") or {}
-        extra.update(self.extra)
+    def process(self, msg: str, kwargs: Any) -> tuple[str, Any]:
+        extra = kwargs.get("extra", {})
+        extra["corr_id"] = self.corr_id
         kwargs["extra"] = extra
         return msg, kwargs
 
 
-# ---------------------------------------------------------
-# Exception logging
-# ---------------------------------------------------------
-def log_exception(logger: logging.Logger, corr_id: str, exc: Exception, **context: Any) -> None:
-    adapter = CorrelationAdapter(logger, corr_id, **context)
-    adapter.error("Exception occurred: %s", exc)
+async def get_corr_id(request: Request) -> str:
+    """Description:
+    FastAPI dependency that extracts the correlation ID from request headers.
+    """
+    header_name = "X-Correlation-ID"
+    corr_id = request.headers.get(header_name)
+
+    if not corr_id:
+        corr_id = str(uuid.uuid4())
+
+    return corr_id

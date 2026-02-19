@@ -1,11 +1,8 @@
-# app/db/records.py
 from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import ClassVar
-
-from pydantic import SecretStr
+from typing import Any, ClassVar
 
 from app.db.base_record import BaseRecord
 
@@ -18,8 +15,11 @@ class Provider(StrEnum):
 
 
 class WorkspaceRecord(BaseRecord):
-    """Represents a workspace in your system.
-    Typically corresponds to a company or Slack workspace.
+    """Description:
+        Persistence model representing a workspace (e.g., a company or Slack team).
+
+    Rules Applied:
+        - Requires a unique string 'id' as the primary identifier.
     """
 
     required_fields: ClassVar[set[str]] = {"id"}
@@ -34,29 +34,24 @@ class WorkspaceRecord(BaseRecord):
 
 
 class IntegrationRecord(BaseRecord):
-    """Represents a single integration installation.
-    One workspace may have multiple integrations:
-    - Slack
-    - HubSpot
-    - WhatsApp (future)
-    - Gmail (future)
+    """Description:
+        Unified persistence model for all integration installations (Slack, HubSpot).
+
+    Rules Applied:
+        - Utilizes generic JSONB 'credentials' and 'metadata' fields for flexibility.
+        - Links a provider integration to a specific workspace ID.
     """
 
     required_fields: ClassVar[set[str]] = {"id", "workspace_id", "provider"}
 
     id: str
     workspace_id: str
-    provider: Provider  # now strongly typed
+    provider: Provider
 
-    # Slack fields
-    slack_team_id: str | None = None
-    slack_bot_token: SecretStr | None = None
-
-    # HubSpot fields
-    portal_id: str | None = None
-    access_token: SecretStr | None = None
-    refresh_token: SecretStr | None = None
-    channel_id: str | None = None
+    # Flexible storage for all platforms
+    # Supabase jsonb columns
+    credentials: dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
 
     # Optional metadata
     created_at: datetime | None = None
@@ -68,3 +63,32 @@ class IntegrationRecord(BaseRecord):
 
     def is_hubspot(self) -> bool:
         return self.provider == Provider.HUBSPOT
+
+    # Credential access helpers
+    @property
+    def access_token(self) -> str | None:
+        return self.credentials.get("access_token")
+
+    @property
+    def refresh_token(self) -> str | None:
+        return self.credentials.get("refresh_token")
+
+    @property
+    def expires_at(self) -> int | None:
+        return self.credentials.get("expires_at")
+
+    @property
+    def slack_bot_token(self) -> str | None:
+        return self.credentials.get("slack_bot_token")
+
+    @property
+    def portal_id(self) -> str | None:
+        return self.metadata.get("portal_id")
+
+    @property
+    def slack_team_id(self) -> str | None:
+        return self.metadata.get("slack_team_id")
+
+    @property
+    def channel_id(self) -> str | None:
+        return self.metadata.get("channel_id")

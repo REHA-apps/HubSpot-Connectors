@@ -1,10 +1,9 @@
 # tests/conftest.py
-import pytest
 import uuid
-from pydantic import SecretStr
 
-from app.services.integration_service import IntegrationService
-from app.integrations.slack_integration import SlackIntegration
+import pytest
+
+from app.domains.crm.integration_service import IntegrationService
 
 
 @pytest.fixture
@@ -14,12 +13,13 @@ def corr_id():
 
 @pytest.fixture
 def slack_integration():
-    return SlackIntegration(
-        slack_bot_token=SecretStr("xoxb-test-token"),
-        default_channel="#general",
-    )
+    """Legacy fixture - returning dict for compatibility if used."""
+    return {
+        "slack_bot_token": "xoxb-test-token",
+        "default_channel": "#general",
+    }
 
 
 @pytest.fixture
 def integration_service(corr_id):
-    return IntegrationService(corr_id=corr_id)
+    return IntegrationService(corr_id)

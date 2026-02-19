@@ -1,4 +1,3 @@
-# app/db/supabase_client.py
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -9,7 +8,6 @@ from supabase import Client, create_client
 
 from app.core.config import settings
 from app.core.logging import CorrelationAdapter, get_logger
-from app.db.protocols import SupportsSingle
 
 logger = get_logger("supabase")
 
@@ -17,13 +15,12 @@ T = TypeVar("T")
 
 
 class SupabaseClient:
-    """Async-friendly wrapper around the synchronous Supabase Python client.
+    """Description:
+        Asynchronous-aware wrapper for the synchronous Supabase Python SDK.
 
-    Features:
-    - Executes all Supabase operations in a threadpool (non-blocking)
-    - Supports select/order/limit
-    - Real upsert (on_conflict)
-    - Correlation-ID aware logging
+    Rules Applied:
+        - Executes all blocking I/O calls in a specialized threadpool using anyio.
+        - Injects correlation IDs into all database-level logs for traceability.
     """
 
     def __init__(self, *, corr_id: str | None = None) -> None:
@@ -43,11 +40,21 @@ class SupabaseClient:
         *,
         select: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
+        """Description:
+            Fetches a single record from the database matching the provided criteria.
+
+        Args:
+            table (str): Target table name.
+            filters (Mapping[str, Any]): Equivalence filters (column: value).
+            select (Sequence[str] | None): Column selection override.
+
+        Returns:
+            dict[str, Any] | None: The record payload or None if not found.
+
+        """
         self.log.info("Fetching single row from %s filters=%s", table, filters)
 
-        query = self.client.table(table).select(
-            ",".join(select) if select else "*"
-        )
+        query = self.client.table(table).select(",".join(select) if select else "*")
 
         for key, value in filters.items():
             query = query.eq(key, value)
@@ -55,15 +62,23 @@ class SupabaseClient:
         try:
             resp = await self._run(lambda: query.single().execute())
         except Exception as e:
-            # Supabase errors include the full REST URL in the exception args
-            self.log.error("SUPABASE ERROR: %s", e)
+            # Handle "0 rows" error from .single()
+            if hasattr(e, "code") and getattr(e, "code") == "PGRST116":
+                self.log.info("No row found in %s for filters=%s", table, filters)
+                return None
 
-            # Some versions include the request URL in e.args[0]
+            # For some versions, the error might be in the args or as a string
+            err_msg = str(e)
+            if "PGRST116" in err_msg or "0 rows" in err_msg:
+                self.log.info(
+                    "No row found in %s for filters=%s (caught via msg)", table, filters
+                )
+                return None
+
+            self.log.error("SUPABASE ERROR: %s", e)
             if e.args:
                 self.log.error("SUPABASE RAW ERROR PAYLOAD: %s", e.args[0])
-
             raise
-
 
         raw = resp.data
         self.log.info("RAW SUPABASE ROW: %s", raw)
@@ -84,9 +99,7 @@ class SupabaseClient:
     ) -> Sequence[dict[str, Any]]:
         self.log.info("Fetching many rows from %s filters=%s", table, filters)
 
-        query = self.client.table(table).select(
-            ",".join(select) if select else "*"
-        )
+        query = self.client.table(table).select(",".join(select) if select else "*")
 
         for key, value in filters.items():
             query = query.eq(key, value)
@@ -108,11 +121,17 @@ class SupabaseClient:
     ) -> dict[str, Any]:
         self.log.info("Inserting into %s payload=%s", table, payload)
 
-        builder = self.client.table(table).insert(payload)
-        single_builder = cast(SupportsSingle, builder)
+        query = self.client.table(table).insert(payload)
+        resp = await self._run(lambda: query.execute())
 
-        resp = await self._run(lambda: single_builder.single().execute())
-        return resp.data
+        # In newer versions, data might be a list or a dict
+        data = resp.data
+        if isinstance(data, list) and len(data) > 0:
+            val = data[0]
+            if isinstance(val, dict):
+                return cast(dict[str, Any], val)
+            return cast(dict[str, Any], {"value": val})  # Should be rare
+        return cast(dict[str, Any], data)
 
     async def upsert(
         self,
@@ -123,14 +142,16 @@ class SupabaseClient:
     ) -> dict[str, Any] | None:
         self.log.info("Upserting into %s payload=%s", table, payload)
 
-        builder = (
-            self.client.table(table)
-            .upsert(payload, on_conflict=on_conflict)
-        )
-        single_builder = cast(SupportsSingle, builder)
+        query = self.client.table(table).upsert(payload, on_conflict=on_conflict)
+        resp = await self._run(lambda: query.execute())
 
-        resp = await self._run(lambda: single_builder.single().execute())
-        return resp.data if isinstance(resp.data, dict) else None
+        data = resp.data
+        if isinstance(data, list) and len(data) > 0:
+            val = data[0]
+            if isinstance(val, dict):
+                return cast(dict[str, Any], val)
+            return None
+        return cast(dict[str, Any], data) if isinstance(data, dict) else None
 
     async def update(
         self,
@@ -168,7 +189,7 @@ class SupabaseClient:
         table: str,
         filters: Mapping[str, Any],
     ) -> int:
-        """Return count of rows matching filters (compatible with all Supabase versions)."""
+        """Return count of rows matching filters (Supabase version compatible)."""
         self.log.info("Counting rows in %s filters=%s", table, filters)
 
         query = self.client.table(table).select("id")

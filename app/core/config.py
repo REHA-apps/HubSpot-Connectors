@@ -1,4 +1,3 @@
-# app/core/config.py
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -9,13 +8,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """
-    Application configuration with:
-    - URL validation
-    - SecretStr for sensitive values
-    - Environment-based config
-    - Safe dump() helper
-    - Computed environment flags
+    """Description:
+        Centralized application configuration using Pydantic Settings.
+
+    Rules Applied:
+        - Uses HttpUrl for URL validation and SecretStr for sensitive values.
+        - Loads configuration from .env files.
+        - Provides computed properties for environment state and scope encoding.
     """
 
     model_config = SettingsConfigDict(
@@ -24,9 +23,7 @@ class Settings(BaseSettings):
         validate_default=True,
     )
 
-    # ---------------------------------------------------------
-    # App
-    # ---------------------------------------------------------
+    # App settings
     APP_NAME: str = "HubSpot CRM - Slack Connectors"
     APP_VERSION: str = "1.0.0"
 
@@ -35,37 +32,27 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     DEBUG: bool = False
 
-    # ---------------------------------------------------------
-    # HubSpot
-    # ---------------------------------------------------------
+    # HubSpot settings
     HUBSPOT_CLIENT_ID: str = Field(default="")
     HUBSPOT_CLIENT_SECRET: SecretStr = Field(default=SecretStr(""))
     HUBSPOT_REDIRECT_URI: HttpUrl = Field(default=HttpUrl("http://localhost"))
 
-    # ---------------------------------------------------------
-    # Slack
-    # ---------------------------------------------------------
+    # Slack settings
     SLACK_CLIENT_ID: str = Field(default="")
     SLACK_CLIENT_SECRET: SecretStr = Field(default=SecretStr(""))
     SLACK_REDIRECT_URI: HttpUrl = Field(default=HttpUrl("http://localhost"))
     SLACK_SIGNING_SECRET: SecretStr = Field(default=SecretStr(""))
     SLACK_BOT_TOKEN: SecretStr = Field(default=SecretStr(""))
 
-    # ---------------------------------------------------------
-    # Supabase
-    # ---------------------------------------------------------
+    # Supabase settings
     SUPABASE_URL: HttpUrl = Field(default=HttpUrl("http://localhost"))
     SUPABASE_KEY: SecretStr = Field(default=SecretStr(""))
 
-    # ---------------------------------------------------------
-    # API
-    # --------------------------------------------------------- 
+    # API settings
     API_BASE_URL: HttpUrl = Field(default=HttpUrl("http://localhost"))
     API_PUBLIC_URL: HttpUrl = Field(default=HttpUrl("http://localhost"))
 
-    # ---------------------------------------------------------
-    # HubSpot Scopes
-    # ---------------------------------------------------------
+    # Scopes
     HUBSPOT_SCOPES: str = Field(
         default=(
             "crm.objects.contacts.read "
@@ -76,25 +63,33 @@ class Settings(BaseSettings):
             "crm.objects.deals.write "
             "crm.objects.leads.read "
             "crm.objects.leads.write "
-            "oauth"
+            "crm.objects.custom.read "
             "crm.schemas.companies.read "
+            "crm.objects.feedback_submissions.read "
+            "tickets "
+            "e-commerce "
+            "oauth"
         ),
-    )   
+        repr=False,
+    )
     # "crm.schemas.contacts.read "
 
-    SLACK_SCOPES: str = (
-        "commands "
-        "chat:write "
-        "chat:write.public "
-        "users:read "
-        "users:read.email"
+    SLACK_SCOPES: str = Field(
+        default=("commands chat:write chat:write.public users:read users:read.email"),
+        repr=False,
     )
-   
-    # ---------------------------------------------------------
-    # Safe dump
-    # ---------------------------------------------------------
+
     def dump(self) -> Mapping[str, Any]:
-        """Return a safe, non-secret configuration snapshot."""
+        """Description:
+            Returns a safe, scrubbed snapshot of the current configuration.
+
+        Returns:
+            Mapping[str, Any]: Configuration dictionary with sensitive values masked.
+
+        Rules Applied:
+            - Masks all SecretStr instances with '***'.
+
+        """
         data = self.model_dump()
 
         def scrub(value: Any) -> Any:
@@ -104,12 +99,12 @@ class Settings(BaseSettings):
 
         return {key: scrub(value) for key, value in data.items()}
 
-    @computed_field
+    @computed_field(repr=False)
     @property
     def HUBSPOT_SCOPES_ENCODED(self) -> str:
         return self.HUBSPOT_SCOPES.replace(" ", "%20")
 
-    @computed_field
+    @computed_field(repr=False)
     @property
     def SLACK_SCOPES_ENCODED(self) -> str:
         return self.SLACK_SCOPES.replace(" ", "%20")
@@ -145,11 +140,17 @@ class Settings(BaseSettings):
     def is_debug(self) -> bool:
         return self.DEBUG or self.is_dev
 
-    # ---------------------------------------------------------
-    # Production validation
-    # ---------------------------------------------------------
     def require_prod_secrets(self) -> None:
-        """Ensure all secrets are present in production."""
+        """Description:
+            Validates that all necessary secrets are provided when running in prod.
+
+        Returns:
+            None
+
+        Rules Applied:
+            - Raises RuntimeError if any SecretStr is empty in a production environment.
+
+        """
         if not self.is_prod:
             return
 
@@ -161,11 +162,14 @@ class Settings(BaseSettings):
         if missing:
             raise RuntimeError(f"Missing required production secrets: {missing}")
 
-    # ---------------------------------------------------------
-    # Full validation entrypoint
-    # ---------------------------------------------------------
     def validate_all(self) -> None:
-        """Run all validation checks."""
+        """Description:
+            Executes all application-level configuration validation checks.
+
+        Returns:
+            None
+
+        """
         self.require_prod_secrets()
 
 

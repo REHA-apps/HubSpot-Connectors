@@ -1,16 +1,15 @@
 # tests/test_event_router.py
-import pytest
 from unittest.mock import AsyncMock, patch
 
-from app.services.event_router import EventRouter
+import pytest
+
+from app.domains.crm.event_router import EventRouter
 
 
 @pytest.mark.asyncio
-async def test_route_contact_update(
-    corr_id, integration_service, slack_integration
-):
+async def test_route_contact_update(corr_id, integration_service, slack_integration):
     router = EventRouter(
-        corr_id=corr_id,
+        corr_id,
         integration_service=integration_service,
         slack_integration=slack_integration,
     )

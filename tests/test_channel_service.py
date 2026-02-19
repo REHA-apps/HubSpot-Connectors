@@ -1,14 +1,15 @@
 # tests/test_channel_service.py
-import pytest
 from unittest.mock import AsyncMock, patch
 
-from app.services.channel_service import ChannelService
+import pytest
+
+from app.domains.crm.channel_service import ChannelService
 
 
 @pytest.mark.asyncio
 async def test_send_slack_card(corr_id, integration_service, slack_integration):
     service = ChannelService(
-        corr_id=corr_id,
+        corr_id,
         integration_service=integration_service,
         slack_integration=slack_integration,
     )

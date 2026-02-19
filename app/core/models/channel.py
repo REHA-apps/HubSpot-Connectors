@@ -15,12 +15,13 @@ class Identity(BaseModel):
         populate_by_name=True,
     )
 
-    id: str
+    external_id: str
+    provider: str = "unknown"
     email: str | None = None
     name: str | None = None
     source: str = "unknown"
 
-    @field_validator("id")
+    @field_validator("external_id")
     def ensure_str(cls, v):
         return str(v)
 
@@ -60,33 +61,19 @@ class OutboundMessage(BaseModel):
     )
 
     workspace_id: str
-
-    # Slack: C..., G..., D...
-    channel: str | None = None
-
-    # Slack ephemeral messages
-    user: str | None = None
-
-    # Threading support
-    thread_ts: str | None = None
-
-    # Message content
+    destination: str | None = None
     text: str | None = None
-    blocks: list[dict[str, Any]] | None = None
-    attachments: list[dict[str, Any]] | None = None
+
+    # Platform-agnostic bucket for rich formatting (Blocks, Templates, Threading, etc.)
+    provider_metadata: dict[str, Any] = {}
 
     # Optional identity (for auditing or routing)
     identity: Identity | None = None
 
-    @field_validator("channel")
-    def validate_channel(cls, v):
+    @field_validator("destination")
+    def validate_destination(cls, v):
         if v is None:
             return v
         if not isinstance(v, str):
-            raise ValueError("channel must be a string")
-        if not (v.startswith("C") or v.startswith("G") or v.startswith("D")):
-            raise ValueError(
-                f"Invalid Slack channel ID: {v}. "
-                "Expected a Slack channel ID (C..., G..., or D...)."
-            )
+            raise ValueError("destination must be a string")
         return v

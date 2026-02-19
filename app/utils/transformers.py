@@ -1,4 +1,3 @@
-# app/utils/transformers.py
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -11,14 +10,10 @@ from app.core.logging import CorrelationAdapter, get_logger
 logger = get_logger("utils.transformers")
 
 
-# ---------------------------------------------------------
 # HubSpot timestamp conversions
-# ---------------------------------------------------------
 @lru_cache(maxsize=1024)
 def _cached_to_hubspot_timestamp(dt: datetime) -> int:
-    """Pure cached conversion without logging."""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
+    """Pure cached conversion — expects UTC-aware datetime."""
     return int(dt.timestamp() * 1000)
 
 
@@ -27,13 +22,27 @@ def to_hubspot_timestamp(
     *,
     corr_id: str | None = None,
 ) -> int:
-    """Convert datetime to HubSpot Unix ms timestamp.
-    Logging is outside the cached function to avoid cache/log mismatch.
+    """Description:
+        Converts a Python datetime object to a HubSpot-compatible Unix millisecond
+        timestamp.
+
+    Args:
+        dt (datetime): The datetime to convert.
+        corr_id (str | None): Optional correlation ID for logging.
+
+    Returns:
+        int: The resulting millisecond timestamp.
+
+    Rules Applied:
+        - Ensures UTC timezone conversion if missing.
+        - Utilizes internal LRU caching for performance.
+
     """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")
 
     if dt.tzinfo is None:
         log.warning("Datetime missing timezone; assuming UTC")
+        dt = dt.replace(tzinfo=UTC)
 
     ts = _cached_to_hubspot_timestamp(dt)
     log.debug("Converted datetime to HubSpot timestamp: %s -> %s", dt, ts)
@@ -51,8 +60,19 @@ def from_hubspot_timestamp(
     *,
     corr_id: str | None = None,
 ) -> datetime:
-    """Convert HubSpot Unix ms timestamp to datetime.
-    Logging is outside the cached function to avoid cache/log mismatch.
+    """Description:
+        Converts a HubSpot Unix millisecond timestamp back to a Python datetime.
+
+    Args:
+        ms (int): Target millisecond timestamp.
+        corr_id (str | None): Optional correlation ID for logging.
+
+    Returns:
+        datetime: The resulting datetime object (UTC).
+
+    Rules Applied:
+        - Utilizes internal LRU caching for performance.
+
     """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")
 
@@ -61,19 +81,26 @@ def from_hubspot_timestamp(
     return dt
 
 
-# ---------------------------------------------------------
 # HubSpot object flattening
-# ---------------------------------------------------------
 def flatten_properties(
     hubspot_object: Mapping[str, Any],
     *,
     corr_id: str | None = None,
 ) -> dict[str, Any]:
-    """Flatten HubSpot object properties into top-level dict.
+    """Description:
+        Flattens HubSpot's nested 'properties' structure into a single-level
+        dictionary.
 
-    Example:
-        {"id": "123", "properties": {"firstname": "John"}}
-        → {"id": "123", "firstname": "John"}
+    Args:
+        hubspot_object (Mapping[str, Any]): Raw HubSpot object record.
+        corr_id (str | None): Optional correlation ID for logging.
+
+    Returns:
+        dict[str, Any]: Flattened object dictionary.
+
+    Rules Applied:
+        - Promotes all nested properties to the top level.
+        - Preserves existing top-level keys unless explicitly overwritten.
 
     """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")

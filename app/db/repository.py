@@ -1,4 +1,3 @@
-# app/db/supabase_repository.py
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -14,14 +13,12 @@ logger = get_logger("supabase.repo")
 
 
 class SupabaseRepository(Generic[R]):
-    """Generic async repository for a single Supabase table + record type.
+    """Description:
+        Generic asynchronous repository for typed CRUD operations on Supabase tables.
 
-    Features:
-    - Strong typing for all CRUD operations
-    - Optional select/order/limit parameters
-    - Optimized exists() check
-    - Clean, predictable API
-    - Debug-level logging (client logs remain INFO)
+    Rules Applied:
+        - Enforces strong typing via Pydantic model integration.
+        - Provides standard hooks for fetching single or multiple records with filters.
     """
 
     def __init__(
@@ -36,9 +33,7 @@ class SupabaseRepository(Generic[R]):
         self.model = model
         self.log = CorrelationAdapter(logger, corr_id)
 
-    # ---------------------------------------------------------
-    # Fetching
-    # ---------------------------------------------------------
+    # Fetching operations
     async def fetch_single(
         self,
         filters: Mapping[str, Any],
@@ -72,9 +67,7 @@ class SupabaseRepository(Generic[R]):
         )
         return [self.model.from_supabase(r) for r in rows]
 
-    # ---------------------------------------------------------
-    # Insert / Upsert / Update
-    # ---------------------------------------------------------
+    # Mutation operations
     async def insert(self, payload: Mapping[str, Any]) -> R:
         self.log.debug("insert(%s): %s", self.table, payload)
 
@@ -110,16 +103,12 @@ class SupabaseRepository(Generic[R]):
 
         return self.model.from_supabase(row)
 
-    # ---------------------------------------------------------
-    # Delete
-    # ---------------------------------------------------------
+    # Deletion operations
     async def delete(self, filters: Mapping[str, Any]) -> int:
         self.log.debug("delete(%s, filters=%s)", self.table, filters)
         return await self.client.delete(self.table, filters)
 
-    # ---------------------------------------------------------
-    # Utility
-    # ---------------------------------------------------------
+    # Utility operations
     async def exists(self, filters: Mapping[str, Any]) -> bool:
         """Optimized existence check using select('id')."""
         row = await self.client.fetch_single(self.table, filters, select=["id"])
@@ -135,5 +124,5 @@ class SupabaseRepository(Generic[R]):
         return rows[0] if rows else None
 
     async def count(self, filters: Mapping[str, Any]) -> int:
-        """Return count of matching rows (Supabase RPC or count(*))."""
+        """Return the number of rows matching the given filters."""
         return await self.client.count(self.table, filters)

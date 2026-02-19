@@ -1,4 +1,3 @@
-# app/utils/parsers.py
 from __future__ import annotations
 
 import shlex
@@ -11,22 +10,26 @@ from app.db.protocols import SupabaseRow
 logger = get_logger("utils.parsers")
 
 
-# ---------------------------------------------------------
 # Slack command parsing
-# ---------------------------------------------------------
 def parse_slack_command_text(
     text: str,
     *,
     corr_id: str | None = None,
 ) -> dict[str, str]:
-    """Parse Slack slash command text into key=value pairs.
+    """Description:
+        Parses raw Slack slash command text into key-value pairs using shell-style
+        splitting.
 
-    Example:
-        "email=john@example.com stage=lead"
-        → {"email": "john@example.com", "stage": "lead"}
+    Args:
+        text (str): The raw command text (e.g., 'email=foo@bar.com').
+        corr_id (str | None): Optional correlation ID for logging.
 
-    Supports quoted values:
-        'name="John Doe" role=admin'
+    Returns:
+        dict[str, str]: Dictionary of parsed key-value pairs.
+
+    Rules Applied:
+        - Supports quoted strings for values containing spaces.
+        - Only inclusions with '=' are parsed as pairs.
 
     """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")
@@ -44,17 +47,22 @@ def parse_slack_command_text(
         return {}
 
 
-# ---------------------------------------------------------
-# Coercion helpers
-# ---------------------------------------------------------
+# Type coercion helpers
 def coerce_to_str_dict(
     data: Mapping[str, Any],
     *,
     corr_id: str | None = None,
 ) -> dict[str, str | None]:
-    """Convert mapping values to str | None.
+    """Description:
+        Normalizes a dictionary by converting all values to strings or None.
 
-    Useful for normalizing HubSpot or Slack payloads before persistence.
+    Args:
+        data (Mapping[str, Any]): The source dictionary.
+        corr_id (str | None): Optional correlation ID for logging.
+
+    Returns:
+        dict[str, str | None]: A new dictionary with string-coerced values.
+
     """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")
 
@@ -67,7 +75,7 @@ def coerce_to_str_dict(
     return result
 
 
-def to_int(value) -> int | None:    
+def to_int(value) -> int | None:
     """Convert value to int, returning None on failure."""
     try:
         return int(value)
@@ -75,18 +83,27 @@ def to_int(value) -> int | None:
         return None
 
 
-# ---------------------------------------------------------
-# Supabase row validation
-# ---------------------------------------------------------
+# Database validation helpers
 def validate_supabase_row(
     data: SupabaseRow,
     required: Iterable[str],
     *,
     corr_id: str | None = None,
 ) -> None:
-    """Validate that required fields exist in a Supabase row.
+    """Description:
+        Ensures that a Supabase database row contains all required fields.
 
-    Raises ValueError if missing.
+    Args:
+        data (SupabaseRow): The record retrieved from Supabase.
+        required (Iterable[str]): List of mandatory column names.
+        corr_id (str | None): Optional correlation ID for logging.
+
+    Returns:
+        None
+
+    Rules Applied:
+        - Raises ValueError if any required field is missing.
+
     """
     log = CorrelationAdapter(logger, corr_id or "no-corr-id")
 

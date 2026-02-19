@@ -1,0 +1,131 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.domains.ai.service import AIService, AITaskAnalysis, AITicketAnalysis
+from app.domains.crm.notification_service import NotificationService
+
+
+# Mock Hubspot properties for creating test objects
+def create_ticket(priority="HIGH", stage="new"):
+    return {
+        "id": "1",
+        "type": "ticket",
+        "properties": {
+            "subject": "Test Ticket",
+            "hs_ticket_priority": priority,
+            "hs_pipeline_stage": stage,
+            "hs_url": "http://hubspot.com/ticket/1",
+        },
+    }
+
+
+def create_task(priority="HIGH", status="NOT_STARTED"):
+    return {
+        "id": "2",
+        "type": "task",
+        "properties": {
+            "hs_task_subject": "Test Task",
+            "hs_task_priority": priority,
+            "hs_task_status": status,
+            "hs_url": "http://hubspot.com/task/2",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_ai_ticket_analysis():
+    ai = AIService("test-ai")
+    ticket = create_ticket(priority="HIGH")
+
+    analysis = await ai.analyze_polymorphic(ticket, "ticket")
+
+    assert isinstance(analysis, AITicketAnalysis)
+    assert analysis.urgency == "Critical"
+    assert "Assign immediately" in analysis.next_action
+
+
+@pytest.mark.asyncio
+async def test_ai_task_analysis():
+    ai = AIService("test-ai")
+    task = create_task(status="WAITING")
+
+    analysis = await ai.analyze_polymorphic(task, "task")
+
+    assert isinstance(analysis, AITaskAnalysis)
+    assert analysis.status_label == "Waiting"
+    assert "Follow up" in analysis.next_action
+
+
+@pytest.mark.asyncio
+async def test_notification_service_high_priority_ticket():
+    """Test that high priority tickets trigger a notification."""
+    with (
+        patch("app.domains.crm.notification_service.StorageService") as MockStorage,
+        patch("app.domains.crm.notification_service.HubSpotService") as MockHubSpot,
+        patch("app.domains.crm.notification_service.ChannelService") as MockChannel,
+    ):
+        # Setup Mocks
+        mock_storage = MockStorage.return_value
+        mock_storage.get_integration_by_portal_id = AsyncMock(
+            return_value=MagicMock(workspace_id="ws1")
+        )
+        mock_storage.get_integration = AsyncMock(
+            return_value=MagicMock()
+        )  # Slack integration exists
+
+        mock_hubspot = MockHubSpot.return_value
+        # Return a High Priority Ticket
+        mock_hubspot.get_object = AsyncMock(return_value=create_ticket(priority="HIGH"))
+
+        mock_channel = MockChannel.return_value
+        mock_channel.send_slack_card = AsyncMock()
+
+        service = NotificationService("test-corr-id")
+
+        event = {
+            "portalId": 12345,
+            "objectId": 100,
+            "subscriptionType": "ticket.creation",
+        }
+
+        await service.handle_event(event)
+
+        # Verify notification was sent
+        mock_channel.send_slack_card.assert_called_once()
+        call_args = mock_channel.send_slack_card.call_args
+        assert call_args.kwargs["obj"]["properties"]["hs_ticket_priority"] == "HIGH"
+
+
+@pytest.mark.asyncio
+async def test_notification_service_low_priority_ticket_skipped():
+    """Test that low priority tickets do NOT trigger a notification."""
+    with (
+        patch("app.domains.crm.notification_service.StorageService") as MockStorage,
+        patch("app.domains.crm.notification_service.HubSpotService") as MockHubSpot,
+        patch("app.domains.crm.notification_service.ChannelService") as MockChannel,
+    ):
+        mock_storage = MockStorage.return_value
+        mock_storage.get_integration_by_portal_id = AsyncMock(
+            return_value=MagicMock(workspace_id="ws1")
+        )
+
+        mock_hubspot = MockHubSpot.return_value
+        # Return a Low Priority Ticket
+        mock_hubspot.get_object = AsyncMock(return_value=create_ticket(priority="LOW"))
+
+        mock_channel = MockChannel.return_value
+        mock_channel.send_slack_card = AsyncMock()
+
+        service = NotificationService("test-corr-id")
+
+        event = {
+            "portalId": 12345,
+            "objectId": 101,
+            "subscriptionType": "ticket.creation",
+        }
+
+        await service.handle_event(event)
+
+        # Verify NO notification was sent
+        mock_channel.send_slack_card.assert_not_called()

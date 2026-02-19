@@ -1,11 +1,78 @@
 # tests/test_ai_service.py
-from app.integrations.ai_service import AIService
+"""Tests for AIService: scoring, null fields, all object types, intent detection."""
+
+import pytest
+
+from app.core.logging import corr_id_ctx, log_context
+from app.domains.ai.service import (
+    AICompanyAnalysis,
+    AIContactAnalysis,
+    AIDealAnalysis,
+    AIService,
+    AITaskAnalysis,
+    AITicketAnalysis,
+)
 
 
-def test_analyze_contact_basic():
-    ai = AIService()
-    ai.set_corr_id("test")
+@pytest.fixture
+def ai():
+    return AIService("test")
 
+
+# --- Logging Context ---
+
+
+def test_corr_id_in_context():
+    with log_context("custom-corr"):
+        assert corr_id_ctx.get() == "custom-corr"
+
+
+def test_default_corr_id():
+    assert corr_id_ctx.get() == "none"
+
+
+# --- Contact scoring ---
+
+
+def test_score_normalization_clamp(ai):
+    """Score must be 0-100 even with maxed-out features."""
+    props = {
+        "hs_analytics_num_visits": "9999",
+        "lifecyclestage": "salesqualifiedlead",
+        "company": "Acme Corp",
+        "email": "test@test.com",
+    }
+    score = ai.generate_score(props)
+    MAX_SCORE = 100
+    assert 0 <= score <= MAX_SCORE
+
+
+def test_score_zero_for_empty_props(ai):
+    """Contact with no data scores 0."""
+    score = ai.generate_score({})
+    assert score == 0
+
+
+def test_null_fields_handled(ai):
+    """None/missing properties don't crash."""
+    contact = {"properties": {}}
+    result = ai.generate_contact_insight(contact)
+    assert isinstance(result, str)
+
+
+def test_extreme_visits_value(ai):
+    """Very large visit count doesn't overflow."""
+    props = {"hs_analytics_num_visits": "999999999"}
+    score = ai.generate_score(props)
+    MAX_SCORE = 100
+    assert 0 <= score <= MAX_SCORE
+
+
+# --- Contact analysis ---
+
+
+@pytest.mark.asyncio
+async def test_analyze_contact(ai):
     contact = {
         "properties": {
             "firstname": "Alice",
@@ -13,9 +80,154 @@ def test_analyze_contact_basic():
             "email": "alice@example.com",
         }
     }
-
-    result = ai.analyze_contact(contact)
-
+    result = await ai.analyze_contact(contact)
+    assert isinstance(result, AIContactAnalysis)
     assert result.insight
     assert result.score is not None
     assert result.summary
+
+
+# --- Deal analysis ---
+
+
+def test_analyze_deal(ai):
+    deal = {
+        "properties": {
+            "dealname": "Enterprise Contract",
+            "amount": "50000",
+            "dealstage": "contractsent",
+        }
+    }
+    result = ai.deal_ai.analyze_deal(deal)
+    assert isinstance(result, AIDealAnalysis)
+    assert "Enterprise Contract" in result.summary
+    assert result.risk == "Open"
+
+
+def test_analyze_deal_closed_won(ai):
+    deal = {"properties": {"dealname": "Won Deal", "dealstage": "closedwon"}}
+    result = ai.deal_ai.analyze_deal(deal)
+    assert result.risk == "Won"
+
+
+def test_analyze_deal_closed_lost(ai):
+    deal = {"properties": {"dealname": "Lost Deal", "dealstage": "closedlost"}}
+    result = ai.deal_ai.analyze_deal(deal)
+    assert result.risk == "Lost"
+
+
+# --- Company analysis ---
+
+
+def test_analyze_company_dormant(ai):
+    company = {"properties": {"name": "Dormant Corp", "num_associated_deals": "0"}}
+    result = ai.company_ai.analyze_company(company)
+    assert isinstance(result, AICompanyAnalysis)
+    assert result.health == "Dormant"
+
+
+def test_analyze_company_strategic(ai):
+    company = {"properties": {"name": "Big Corp", "num_associated_deals": "10"}}
+    result = ai.company_ai.analyze_company(company)
+    assert result.health == "Strategic"
+
+
+def test_analyze_company_active(ai):
+    company = {"properties": {"name": "Normal Co", "num_associated_deals": "3"}}
+    result = ai.company_ai.analyze_company(company)
+    assert result.health == "Active"
+
+
+# --- Ticket analysis ---
+
+
+def test_analyze_ticket(ai):
+    ticket = {
+        "properties": {
+            "subject": "Login broken",
+            "hs_pipeline_stage": "1",
+            "hs_ticket_priority": "HIGH",
+        }
+    }
+    result = ai.ticket_ai.analyze_ticket(ticket)
+    assert isinstance(result, AITicketAnalysis)
+    assert result.summary
+
+
+# --- Task analysis ---
+
+
+def test_analyze_task(ai):
+    task = {
+        "properties": {
+            "hs_task_subject": "Follow up",
+            "hs_task_status": "NOT_STARTED",
+        }
+    }
+    result = ai.task_ai.analyze_task(task)
+    assert isinstance(result, AITaskAnalysis)
+    assert result.summary
+
+
+# --- Polymorphic dispatch ---
+
+
+@pytest.mark.asyncio
+async def test_analyze_polymorphic_contact(ai):
+    obj = {"properties": {"firstname": "Test"}}
+    result = await ai.analyze_polymorphic(obj, "contact")
+    assert isinstance(result, AIContactAnalysis)
+
+
+@pytest.mark.asyncio
+async def test_analyze_polymorphic_deal(ai):
+    obj = {"properties": {"dealname": "Deal"}}
+    result = await ai.analyze_polymorphic(obj, "deal")
+    assert isinstance(result, AIDealAnalysis)
+
+
+@pytest.mark.asyncio
+async def test_analyze_polymorphic_unknown_fallback(ai):
+    obj = {"properties": {}}
+    result = await ai.analyze_polymorphic(obj, "unknown_type")
+    assert isinstance(result, AIContactAnalysis)
+
+
+@pytest.mark.asyncio
+async def test_analyze_polymorphic_malformed_input(ai):
+    """None or empty dicts should fallback to safe error object instead of crashing."""
+    # 1. Null object
+    r1 = await ai.analyze_polymorphic(None, "contact")
+    assert r1.score == 0
+    assert "unavailable" in r1.insight.lower()
+
+    # 2. Completely empty dict (missing properties)
+    r2 = await ai.analyze_polymorphic({}, "contact")
+    assert r2.score == 0
+
+    # 3. Non-dict properties
+    r3 = await ai.analyze_polymorphic({"properties": None}, "contact")
+    assert r3.score == 0
+
+
+# --- Intent detection ---
+
+
+def test_detect_intent_deal(ai):
+    assert ai.detect_intent("Show me the pipeline") == "deal"
+
+
+def test_detect_intent_ticket(ai):
+    assert ai.detect_intent("Any open support tickets?") == "ticket"
+
+
+def test_detect_intent_task(ai):
+    assert ai.detect_intent("What tasks are pending?") == "task"
+
+
+def test_detect_intent_lead(ai):
+    assert ai.detect_intent("Find MQL prospects") == "lead"
+
+
+def test_detect_intent_default_contact(ai):
+    assert ai.detect_intent("Show info for john") == "contact"

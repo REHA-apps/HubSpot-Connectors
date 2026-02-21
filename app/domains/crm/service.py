@@ -97,3 +97,17 @@ class CRMService(BaseCRMService):
             associated_id=associated_id,
             associated_type=associated_type,
         )
+
+    async def create_meeting(
+        self,
+        workspace_id: str,
+        properties: Mapping[str, Any],
+        contact_id: str | None = None,
+        provider: Provider = Provider.HUBSPOT,
+    ) -> dict[str, Any]:
+        service = self._resolve_provider_service(provider)
+        return await service.create_meeting(
+            workspace_id=workspace_id,
+            properties=properties,
+            contact_id=contact_id,
+        )

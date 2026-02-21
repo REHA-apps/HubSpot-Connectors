@@ -59,6 +59,15 @@ class NotificationService:
 
         workspace_id = integration.workspace_id
 
+        # Handle HubSpot uninstallation event
+        if sub_type == "app.deleted":
+            self.log.info("Processing HubSpot uninstall for portalId=%s", portal_id)
+            await self.integration_service.uninstall_hubspot(workspace_id)
+            self.log.info(
+                "HubSpot integration removed for workspace_id=%s", workspace_id
+            )
+            return
+
         # 2. Determine Object Type
         obj_type = self._map_subscription_to_type(sub_type)
         if not obj_type:
@@ -73,6 +82,10 @@ class NotificationService:
         if not obj:
             self.log.warning("Could not fetch %s %s", obj_type, object_id)
             return
+
+        # Inject portalId for deep linking
+        if isinstance(obj, dict):
+            obj["portalId"] = portal_id
 
         # 4. Perform AI Analysis
         analysis = await self.ai.analyze_polymorphic(obj, obj_type)
@@ -99,24 +112,24 @@ class NotificationService:
         )
 
         self.log.info("Sending proactive notification for %s %s", obj_type, object_id)
-        await channel_service.send_slack_card(
+        await channel_service.send_card(
             workspace_id=workspace_id,
             obj=obj,
             analysis=analysis,
         )
 
     def _map_subscription_to_type(self, sub_type: str) -> str | None:
-        if "contact" in sub_type:
-            return "contact"
-        if "deal" in sub_type:
-            return "deal"
-        if "company" in sub_type:
-            return "company"
-        if "ticket" in sub_type:
-            return "ticket"
-        # Task webhooks are less common/standard, but if configured:
-        if "task" in sub_type:
-            return "task"
+        type_map = {
+            "contact": "contact",
+            "deal": "deal",
+            "company": "company",
+            "ticket": "ticket",
+            "task": "task",
+            "conversation": "conversation",
+        }
+        for key, val in type_map.items():
+            if key in sub_type:
+                return val
         return None
 
     def _should_notify(self, analysis: Any, event: dict[str, Any]) -> bool:
@@ -147,6 +160,12 @@ class NotificationService:
         if hasattr(analysis, "status_label"):
             # For now, maybe only high priority tasks?
             pass
+
+        # 5. Conversations: Always notify
+        if hasattr(analysis, "status") and "Conversation" in str(
+            getattr(analysis, "summary", "")
+        ):
+            return True
 
         # Default: Don't notify to keep signal-to-noise ratio high
         return False

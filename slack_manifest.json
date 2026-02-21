@@ -4,9 +4,9 @@
     "minor_version": 1
   },
   "display_information": {
-    "name": "HubSpot CRM - Slack Connector",
+    "name": "HubSpot CRM Connector",
     "description": "Search HubSpot contacts, companies, and deals from Slack.",
-    "long_description": "HubSpot CRM Search allows you to seamlessly find and share HubSpot contacts, companies, and deals directly within Slack. Boost your team's productivity by accessing CRM data without switching apps. This integration provides powerful search capabilities, AI-driven insights, and easy collaboration for your sales and support teams, making it easier than ever to manage customer relationships efficiently.",
+    "long_description": "HubSpot CRM Connector allows you to seamlessly find and share HubSpot contacts, companies, and deals directly within Slack. Boost your team's productivity by accessing CRM data without switching apps. This integration provides powerful search capabilities, AI-driven insights, and easy collaboration for your sales and support teams, making it easier than ever to manage customer relationships efficiently.",
     "background_color": "#0052CC"
   },
   "settings": {
@@ -18,8 +18,11 @@
       "bot_events": [
         "message.channels",
         "message.im",
+        "message.groups",
+        "message.mpim",
         "app_mention",
-        "link_shared"
+        "link_shared",
+        "app_uninstalled"
       ]
     },
     "interactivity": {
@@ -29,7 +32,7 @@
   },
   "features": {
     "bot_user": {
-      "display_name": "HubSpot CRM Bot",
+      "display_name": "REHA Bot",
       "always_online": true
     },
     "slash_commands": [
@@ -81,6 +84,28 @@
         "description": "Search HubSpot tasks",
         "usage_hint": "task name",
         "should_escape": false
+      },
+      {
+        "command": "/hs-kb",
+        "url": "https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands",
+        "description": "Search Knowledge Base",
+        "usage_hint": "topic or question",
+        "should_escape": false
+      },
+      {
+        "command": "/hs-playbook",
+        "url": "https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands",
+        "description": "Search Playbooks",
+        "usage_hint": "playbook name",
+        "should_escape": false
+      }
+    ],
+    "shortcuts": [
+      {
+        "name": "Create HubSpot Record",
+        "type": "global",
+        "callback_id": "create_hubspot_record",
+        "description": "Create a new Contact, Deal, Task, or Ticket"
       }
     ]
   },
@@ -95,7 +120,12 @@
         "app_mentions:read",
         "im:history",
         "channels:history",
-        "links:read"
+        "groups:history",
+        "mpim:history",
+        "links:read",
+        "links:write",
+        "channels:read",
+        "groups:read"
       ]
     },
     "redirect_urls": [

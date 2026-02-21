@@ -67,15 +67,27 @@ class AITaskAnalysis:
     next_action: str
 
 
+@dataclass(frozen=True)
+class AIKnowledgeAnalysis:
+    summary: str
+    relevance: str
+    next_action: str
+
+
+@dataclass(frozen=True)
+class AIConversationAnalysis:
+    summary: str
+    status: str
+    next_action: str
+
+
 # Core AI Service
 class AIService:
-    """Description:
-        Core AI service providing deterministic rules for HubSpot object analysis.
+    """Core AI service providing deterministic rules for HubSpot object analysis.
 
-    Rules Applied:
-        - Utilizes scoring algorithms to evaluate contact engagement and quality.
-        - Generates actionable insights and next-best-action recommendations.
-        - Supports intent detection for natural language queries.
+    Utilizes scoring algorithms to evaluate contact engagement and quality,
+    generating actionable insights and next-best-action recommendations.
+    Supports intent detection for natural language queries.
     """
 
     def __init__(self, corr_id: str) -> None:
@@ -83,6 +95,7 @@ class AIService:
         self.company_ai = AICompanyService()
         self.ticket_ai = AITicketService()
         self.task_ai = AITaskService()
+        self.knowledge_ai = AIKnowledgeService()
 
     def set_corr_id(self, corr_id: str) -> None:
         """DEPRECATED: No longer needed with context-aware logging."""
@@ -335,6 +348,10 @@ class AIService:
         | AIDealAnalysis
         | AITicketAnalysis
         | AITaskAnalysis
+        | AITicketAnalysis
+        | AITaskAnalysis
+        | AIKnowledgeAnalysis
+        | AIConversationAnalysis
     ):
         """Standardized entry point for analyzing any HubSpot object.
 
@@ -373,6 +390,10 @@ class AIService:
                 "deal": self.analyze_deal,
                 "ticket": self.analyze_ticket,
                 "task": self.analyze_task,
+                "knowledge_article": self.analyze_knowledge_article,
+                "knowledge": self.analyze_knowledge_article,
+                "conversation": self.analyze_conversation,
+                "thread": self.analyze_conversation,
             }
 
             handler = handler_map.get(normalized_type)
@@ -450,6 +471,40 @@ class AIService:
     async def analyze_task(self, task: Mapping[str, Any]) -> AITaskAnalysis:
         """Analyzes a Task using specialized logic."""
         return self.task_ai.analyze_task(task)
+
+    async def analyze_knowledge_article(
+        self, article: Mapping[str, Any]
+    ) -> AIKnowledgeAnalysis:
+        """Analyzes a Knowledge Base Article."""
+        return self.knowledge_ai.analyze_knowledge_article(article)
+
+    async def analyze_conversation(
+        self, thread: Mapping[str, Any]
+    ) -> AIConversationAnalysis:
+        """Analyzes a Conversation Thread."""
+        # Thread object: id, status, messages (list), etc.
+        t_id = thread.get("id")
+        status = thread.get("status") or "OPEN"
+        messages = thread.get("messages", [])
+        msg_count = len(messages)
+
+        last_msg = messages[0].get("text", "") if messages else "No messages"
+        if len(last_msg) > 50:  # noqa: PLR2004
+            last_msg = last_msg[:47] + "..."
+
+        summary = (
+            f"Conversation #{t_id} ({status}) • {msg_count} messages. Last: {last_msg}"
+        )
+
+        next_action = (
+            "Reply to visitor." if status != "CLOSED" else "Review closed conversation."
+        )
+
+        return AIConversationAnalysis(
+            summary=summary,
+            status=status,
+            next_action=next_action,
+        )
 
     # -----------------------------------------------------
     # Multi-object summarization
@@ -532,19 +587,27 @@ class AIService:
         """
         q = query.lower()
 
-        if any(k in q for k in ["deal", "renewal", "contract", "pipeline", "amount"]):
-            return "deal"
+        intent_map = {
+            "deal": ["deal", "renewal", "contract", "pipeline", "amount"],
+            "lead": ["lead", "mql", "sql", "prospect"],
+            "ticket": ["ticket", "issue", "bug", "support", "incident"],
+            "task": ["task", "todo", "follow-up", "reminder", "action item"],
+            "knowledge_article": [
+                "help",
+                "how to",
+                "guide",
+                "manual",
+                "doc",
+                "documentation",
+                "article",
+                "playbook",
+                "knowledge",
+            ],
+        }
 
-        if any(k in q for k in ["lead", "mql", "sql", "prospect"]):
-            return "lead"
-
-        if any(k in q for k in ["ticket", "issue", "bug", "support", "incident"]):
-            return "ticket"
-
-        if any(
-            k in q for k in ["task", "todo", "follow-up", "reminder", "action item"]
-        ):
-            return "task"
+        for intent, keywords in intent_map.items():
+            if any(k in q for k in keywords):
+                return intent
 
         return "contact"
 
@@ -688,4 +751,26 @@ class AITaskService:
 
         return AITaskAnalysis(
             summary=summary, status_label=status_label, next_action=next_action
+        )
+
+
+class AIKnowledgeService:
+    def analyze_knowledge_article(
+        self, article: Mapping[str, Any]
+    ) -> AIKnowledgeAnalysis:
+        """Analyzes relevance of a knowledge article."""
+        title = article.get("title") or article.get("name") or "Untitled Article"
+        # Content search API returns 'description' or 'snippet'
+        description = (
+            article.get("description") or article.get("searchDescription") or ""
+        )
+
+        summary = f"{title}"
+        if description:
+            summary += f" — {description[:100]}..."
+
+        return AIKnowledgeAnalysis(
+            summary=summary,
+            relevance="High Match" if title else "Unknown",
+            next_action="Share this guide with the customer.",
         )

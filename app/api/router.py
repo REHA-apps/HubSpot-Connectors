@@ -16,6 +16,9 @@ from app.connectors.hubspot.routers.oauth_router import router as hubspot_oauth
 from app.connectors.hubspot.routers.webhook_router import (
     router as hubspot_webhook_router,
 )
+from app.connectors.hubspot.routers.workflow_actions_router import (
+    router as hubspot_workflow_router,
+)
 from app.connectors.slack.routers.events_router import router as slack_events_router
 from app.connectors.slack.routers.install_router import router as install_router
 from app.connectors.slack.routers.interactions_router import (
@@ -53,3 +56,4 @@ api_router.include_router(hubspot_oauth)
 api_router.include_router(hubspot_ai_router)
 api_router.include_router(hubspot_actions_router)
 api_router.include_router(hubspot_webhook_router)
+api_router.include_router(hubspot_workflow_router)

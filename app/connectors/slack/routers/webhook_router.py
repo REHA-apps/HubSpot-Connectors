@@ -34,6 +34,7 @@ async def slack_commands(
     team_id = str(form.get("team_id", ""))
     response_url = str(form.get("response_url", ""))
     channel_id = str(form.get("channel_id", "")).strip()
+    user_id = str(form.get("user_id", "")).strip()
 
     if not command:
         return {"text": "Unknown command."}
@@ -54,6 +55,7 @@ async def slack_commands(
             workspace_id=integration.workspace_id,
             response_url=response_url,
             channel_id=channel_id,
+            user_id=user_id,
             background_tasks=background_tasks,
         )
         return result or {"text": "Command executed."}

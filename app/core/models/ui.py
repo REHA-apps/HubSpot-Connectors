@@ -7,9 +7,11 @@ class CardAction(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     label: str
-    action_type: str  # "url", "callback", "modal"
+    action_type: str  # "url", "callback", "modal", "select"
     value: str
     url: str | None = None
+    options: list[tuple[str, str]] | None = None  # [(label, value), ...]
+    selected_option: str | None = None  # value of the currently selected option
 
 
 class UnifiedCard(BaseModel):

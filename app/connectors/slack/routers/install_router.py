@@ -4,19 +4,21 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 from app.core.config import settings
+from app.core.security.state_validator import sign_state
 
-router = APIRouter(prefix="/install", tags=["slack.install"])
+router = APIRouter(prefix="/slack", tags=["slack.install"])
 
 
-@router.get("/slack", response_class=HTMLResponse)
+@router.get("/install", response_class=HTMLResponse)
 async def install_slack(state: str | None = None):
-    state = state or secrets.token_urlsafe(32)
+    raw_state = state or secrets.token_urlsafe(32)
+    signed_state = sign_state(raw_state)
     oauth_url = (
         "https://slack.com/oauth/v2/authorize"
         f"?client_id={settings.SLACK_CLIENT_ID}"
         f"&scope={settings.SLACK_SCOPES_ENCODED}"
         f"&redirect_uri={settings.SLACK_REDIRECT_URI}"
-        f"&state={state}"
+        f"&state={signed_state}"
     )
 
     return f"""

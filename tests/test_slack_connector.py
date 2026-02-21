@@ -22,7 +22,7 @@ async def test_slack_connector_send_message(corr_id):
 
         msg = OutboundMessage(
             workspace_id="test_workspace",
-            destination="C123456",
+            destination="C12345678",
             text="Hello",
             provider_metadata={"blocks": None},
         )

@@ -154,11 +154,15 @@ class SlackChannel(BaseChannel):
             return None
 
         if not (
-            destination.startswith("C")
-            or destination.startswith("G")
-            or destination.startswith("D")
+            destination
+            and len(destination) >= 9  # noqa: PLR2004
+            and destination[0] in ("C", "G", "D", "U")
+            and destination[1:].isalnum()
+            and not any(c.islower() for c in destination)
         ):
-            self.log.error("Invalid Slack channel/destination ID: %s", destination)
+            self.log.error(
+                "Invalid Slack channel/destination ID format: %s", destination
+            )
             return None
 
         fallback_text = message.text or "New CRM update"
@@ -213,3 +217,73 @@ class SlackChannel(BaseChannel):
         return await self.get_slack_client().chat_unfurl(
             channel=channel, ts=ts, unfurls=unfurls
         )
+
+    async def resolve_channel_name(self, name: str) -> str | None:
+        """Resolves a channel name (e.g., '#general' or 'general') to a channel ID.
+
+        This uses conversations.list which requires 'channels:read'
+        and 'groups:read' scopes.
+        """
+        clean_name = name.lstrip("#").lower()
+        client = self.get_slack_client()
+
+        self.log.info("Attempting to resolve Slack channel name: %s", clean_name)
+
+        try:
+            # Types include public and private channels
+            types = "public_channel,private_channel"
+
+            cursor = None
+            while True:
+                resp = await client.conversations_list(
+                    types=types, cursor=cursor, limit=1000, exclude_archived=True
+                )
+
+                if not resp.get("ok"):
+                    self.log.error(
+                        "Slack conversations.list failed: %s", resp.get("error")
+                    )
+                    break
+
+                channels = resp.get("channels", [])
+                for channel in channels:
+                    if channel.get("name") == clean_name:
+                        channel_id = str(channel.get("id"))
+                        self.log.info("Resolved %s to %s", name, channel_id)
+                        return channel_id
+
+                cursor = resp.get("response_metadata", {}).get("next_cursor")
+                if not cursor:
+                    break
+
+        except Exception as exc:
+            self.log.error("Failed to resolve Slack channel name '%s': %s", name, exc)
+
+        self.log.warning("Could not resolve Slack channel name: %s", name)
+        return None
+
+    async def apps_uninstall(self) -> bool:
+        """Description:
+        Uninstalls the app from the workspace using the current bot token.
+
+        Returns:
+            bool: True if successful, False otherwise.
+
+        """
+        if not self.bot_token:
+            self.log.error("Cannot uninstall: No bot token provided")
+            return False
+
+        try:
+            resp = await self.get_slack_client().apps_uninstall(
+                client_id=settings.SLACK_CLIENT_ID,
+                client_secret=settings.SLACK_CLIENT_SECRET.get_secret_value(),
+            )
+            if not resp.get("ok"):
+                self.log.error("Slack apps.uninstall failed: %s", resp.get("error"))
+                return False
+            self.log.info("App successfully uninstalled from Slack workspace")
+            return True
+        except Exception as exc:
+            self.log.error("Slack apps.uninstall exception: %s", exc)
+            return False

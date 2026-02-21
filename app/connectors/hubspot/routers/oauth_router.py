@@ -52,7 +52,7 @@ async def hubspot_oauth_callback(
         )
         if not slack_integration:
             log.info("Redirecting to Slack install to bridge connection")
-            return RedirectResponse(url=f"/api/install/slack?state={workspace_id}")
+            return RedirectResponse(url=f"/api/slack/install?state={workspace_id}")
 
         return render_success_page(
             title="Connection Successful",

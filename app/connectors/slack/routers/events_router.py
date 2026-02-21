@@ -12,6 +12,7 @@ from fastapi import (
 )
 
 from app.core.dependencies import get_integration_service
+from app.core.exceptions import IntegrationNotFoundError
 from app.core.logging import CorrelationAdapter, get_corr_id, get_logger
 from app.core.security.slack_signature import verify_slack_signature
 from app.domains.crm.channel_service import ChannelService
@@ -26,7 +27,7 @@ logger = get_logger("slack.events")
     "/events",
     # dependencies=[Depends(verify_slack_signature)],
 )
-async def slack_events(  # noqa: PLR0911
+async def slack_events(  # noqa: PLR0911, PLR0915
     request: Request,
     background_tasks: BackgroundTasks,
     corr_id: str = Depends(get_corr_id),
@@ -42,7 +43,7 @@ async def slack_events(  # noqa: PLR0911
     try:
         raw_body = await request.body()
         payload = await request.json()
-        log.info("Received Slack event payload")
+        log.info("Received Slack event: type=%s", payload.get("type"))
     except Exception as exc:
         log.error("Failed to parse Slack event payload: %s", exc)
         raise HTTPException(
@@ -84,6 +85,8 @@ async def slack_events(  # noqa: PLR0911
             workspace_id = await integration_service.resolve_workspace(team_id)
             await integration_service.uninstall_slack(workspace_id)
             log.info("Slack integration removed for workspace_id=%s", workspace_id)
+        except IntegrationNotFoundError:
+            log.info("Slack integration already removed or not found (idempotent skip)")
         except Exception as exc:
             log.warning("Slack uninstall failed: %s", exc)
 
@@ -125,5 +128,51 @@ async def slack_events(  # noqa: PLR0911
             links=links,
         )
         return {"ok": True}
+
+    # Handle message events for Threaded Replies (Sync to CRM)
+    if event_type == "message":
+        subtype = event.get("subtype")
+        thread_ts = event.get("thread_ts")
+        ts = event.get("ts")
+
+        # Filter: Standard user message (no subtype usually), not a bot, and IS
+        # a reply (thread_ts != ts)
+        if (
+            subtype is None
+            and not event.get("bot_id")
+            and thread_ts
+            and ts
+            and thread_ts != ts
+        ):
+            text = event.get("text", "")
+            user = event.get("user", "")
+            channel = event.get("channel", "")
+
+            log.info(
+                "Processing threaded reply in channel=%s thread_ts=%s",
+                channel,
+                thread_ts,
+            )
+
+            # Use cached integration service to resolve
+            integration = await integration_service.get_integration_by_slack_team_id(
+                team_id
+            )
+            if integration:
+                channel_service = ChannelService(
+                    corr_id=corr_id,
+                    integration_service=integration_service,
+                    slack_integration=integration,
+                )
+
+                background_tasks.add_task(
+                    channel_service.handle_threaded_reply,
+                    workspace_id=integration.workspace_id,
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    message_ts=str(ts),
+                    text=text,
+                    user=user,
+                )
 
     return {"ok": True}

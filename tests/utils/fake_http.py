@@ -8,7 +8,7 @@ class FakeHTTPResponse:
         return self._json
 
     def raise_for_status(self):
-        if self.status_code >= 400:
+        if self.status_code >= 400:  # noqa: PLR2004
             raise Exception("HTTP error")
 
 

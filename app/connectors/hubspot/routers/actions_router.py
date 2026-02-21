@@ -6,6 +6,7 @@ from app.core.dependencies import (
     get_hubspot_service,
     get_integration_service,
 )
+from app.core.exceptions import IntegrationNotFoundError
 from app.core.logging import get_corr_id
 from app.db.records import Provider
 from app.domains.ai.service import AIService
@@ -26,27 +27,36 @@ async def send_ai_insights_to_slack(
     ai: AIService = Depends(get_ai_service),
     integration_service: IntegrationService = Depends(get_integration_service),
 ):
-    contact = await hubspot.get_contact(portalId, objectId)
-    if not contact:
-        raise HTTPException(404, "Contact not found")
+    try:
+        contact = await hubspot.get_contact(portalId, objectId)
+        if not contact:
+            raise HTTPException(404, "Contact not found")
 
-    analysis = ai.analyze_contact(contact)
+        analysis = ai.analyze_contact(contact)
 
-    slack_integration = await integration_service.get_integration(
-        workspace_id=portalId,
-        provider=Provider.SLACK,
-    )
+        slack_integration = await integration_service.get_integration(
+            workspace_id=portalId,
+            provider=Provider.SLACK,
+        )
 
-    channel_service = ChannelService(
-        corr_id=corr_id,
-        integration_service=integration_service,
-        slack_integration=slack_integration,
-    )
+        channel_service = ChannelService(
+            corr_id=corr_id,
+            integration_service=integration_service,
+            slack_integration=slack_integration,
+        )
 
-    await channel_service.send_slack_ai_insights(
-        workspace_id=portalId,
-        channel=channel,
-        analysis=analysis,
-    )
+        await channel_service.send_slack_ai_insights(
+            workspace_id=portalId,
+            channel=channel,
+            analysis=analysis,
+        )
 
-    return {"status": "ok"}
+        return {"status": "ok"}
+    except IntegrationNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Integration not found: {exc.message}. "
+                "Please insure you have authorized both HubSpot and Slack."
+            ),
+        )

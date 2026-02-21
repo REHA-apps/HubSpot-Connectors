@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.connectors.hubspot.channel import HubSpotChannel
-from app.connectors.slack.channel import SlackChannel
+from app.connectors.slack.channel import SlackChannel  # noqa: PLC0415
 from app.core.exceptions import IntegrationNotFoundError
 from app.core.logging import CorrelationAdapter, get_logger
 from app.db.records import IntegrationRecord, Provider
 from app.db.storage_service import StorageService
+from app.domains.crm.hubspot.workflow_service import WorkflowService
 
 logger = get_logger("integration.service")
 
@@ -34,6 +35,12 @@ class IntegrationService:
         self.storage = storage or StorageService(corr_id)
         self.slack_channel = SlackChannel(corr_id)
         self.hubspot_channel = HubSpotChannel(corr_id)
+
+        # Avoid circular import
+        from app.domains.crm.hubspot.service import HubSpotService  # noqa: PLC0415
+
+        self.hubspot_service = HubSpotService(self.corr_id, storage=self.storage)
+        self.workflow_service = WorkflowService(corr_id, self.storage)
 
         # Typed caches
         self._integration_cache: dict[
@@ -139,10 +146,16 @@ class IntegrationService:
         if default_channel:
             return default_channel
 
-        # 2. Fallback: Slack team ID
-        slack_team_id = getattr(integration, "slack_team_id", None)
-        if slack_team_id:
-            return slack_team_id
+        # 2. Check metadata
+        if integration.metadata and "channel_id" in integration.metadata:
+            return integration.metadata["channel_id"]
+
+        # 3. Fallback: Slack team ID is NOT a valid channel.
+        # We cannot default to it.
+
+        raise IntegrationNotFoundError(
+            f"No default Slack channel configured for workspace {workspace_id}"
+        )
 
         raise IntegrationNotFoundError(
             f"No default Slack channel configured for workspace {workspace_id}"
@@ -199,6 +212,9 @@ class IntegrationService:
             hs_payload["id"] = existing_hs.id
 
         await self.storage.upsert_integration(hs_payload)
+
+        # Seed initial workflows for user
+        await self.workflow_service.seed_all_workflows(workspace_id)
 
         self.log.info("HubSpot integration saved workspace_id=%s", workspace_id)
         return workspace_id
@@ -278,8 +294,66 @@ class IntegrationService:
         return workspace_id
 
     # Uninstallation
+    async def uninstall_workspace(
+        self,
+        workspace_id: str,
+        trigger_hubspot_uninstall: bool = True,
+        trigger_slack_uninstall: bool = True,
+    ) -> None:
+        """Description:
+        Fully uninstalls all integrations for a workspace and resets the workflow state.
+        Triggers proactive uninstallation on both Slack and HubSpot if applicable.
+        """
+        # 1. Re-entry Guard: Check if the workspace record exists before proceeding.
+        # This prevents infinite loops if revocation is detected multiple times.
+        workspace = await self.storage.get_workspace(workspace_id)
+        if not workspace:
+            self.log.info("Workspace %s already uninstalled; skipping.", workspace_id)
+            return
+
+        self.log.info("Resetting all integrations for workspace_id=%s", workspace_id)
+
+        # 2. Proactively uninstall from HubSpot if present and requested
+        if trigger_hubspot_uninstall:
+            try:
+                hs_integration = await self.get_integration(
+                    workspace_id, Provider.HUBSPOT
+                )
+                if hs_integration:
+                    self.log.info("Triggering outbound HubSpot uninstallation")
+                    await self.hubspot_service.uninstall_app(workspace_id)
+            except Exception as exc:
+                self.log.warning(
+                    "Outbound HubSpot uninstallation failed: %s",
+                    exc,
+                )
+
+        # 3. Proactively uninstall from Slack if present and requested
+        if trigger_slack_uninstall:
+            try:
+                slack_integration = await self.get_integration(
+                    workspace_id, Provider.SLACK
+                )
+                if slack_integration:
+                    self.log.info("Triggering outbound Slack uninstallation")
+                    # Attach token to channel
+                    bot_token = slack_integration.slack_bot_token
+                    self.slack_channel.bot_token = bot_token
+                    await self.slack_channel.apps_uninstall()
+            except Exception as exc:
+                self.log.warning("Outbound Slack uninstallation failed: %s", exc)
+
+        # Clear integrations first (tokens, metadata)
+        await self.storage.delete_all_integrations_for_workspace(workspace_id)
+
+        # Finally remove the workspace record itself for a full reset
+        await self.storage.delete_workspace(workspace_id)
+
     async def uninstall_hubspot(self, workspace_id: str) -> None:
-        await self.storage.delete_integration(workspace_id, provider=Provider.HUBSPOT)
+        """Description:
+        Handles HubSpot uninstallation by resetting the workspace integrations.
+        """
+        await self.uninstall_workspace(workspace_id, trigger_hubspot_uninstall=False)
 
     async def update_slack_tokens(
         self,
@@ -314,4 +388,7 @@ class IntegrationService:
         )
 
     async def uninstall_slack(self, workspace_id: str) -> None:
-        await self.storage.delete_integration(workspace_id, provider=Provider.SLACK)
+        """Description:
+        Handles Slack uninstallation by resetting the workspace integrations.
+        """
+        await self.uninstall_workspace(workspace_id, trigger_slack_uninstall=False)

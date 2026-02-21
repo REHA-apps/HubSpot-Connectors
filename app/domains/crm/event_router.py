@@ -50,7 +50,7 @@ class EventRouter:
         # - Slack UI building
         # - SlackConnector resolution
         # - Slack message sending
-        return await self.channel_service.send_slack_card(
+        return await self.channel_service.send_card(
             workspace_id=workspace_id,
             obj=contact,
             channel=channel,
@@ -70,7 +70,7 @@ class EventRouter:
             channel,
         )
 
-        return await self.channel_service.send_slack_card(
+        return await self.channel_service.send_card(
             workspace_id=workspace_id,
             obj=obj,
             channel=channel,

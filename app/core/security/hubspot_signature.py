@@ -15,8 +15,7 @@ logger = get_logger("hubspot.security")
 
 
 async def verify_hubspot_signature(request: Request) -> None:
-    """
-    FastAPI dependency for verifying HubSpot webhook signatures.
+    """FastAPI dependency for verifying HubSpot webhook signatures.
 
     HubSpot signs:
         scheme + host + path  (NO query params)

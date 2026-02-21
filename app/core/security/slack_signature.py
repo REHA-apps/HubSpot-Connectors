@@ -6,7 +6,7 @@ import hmac
 import time
 from collections.abc import Mapping
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 
 from app.core.config import settings
 from app.core.logging import CorrelationAdapter, get_logger
@@ -21,8 +21,7 @@ async def verify_slack_signature(
     *,
     corr_id: str | None = None,
 ) -> None:
-    """
-    Verify Slack request signature.
+    """Verify Slack request signature.
 
     Slack signs:
         v0:{timestamp}:{raw_body}
@@ -76,11 +75,14 @@ async def verify_slack_signature(
     # ---------------------------------------------------------
     basestring = f"v0:{timestamp}:{body.decode()}"
 
-    computed = "v0=" + hmac.new(
-        secret.encode(),
-        basestring.encode(),
-        hashlib.sha256,
-    ).hexdigest()
+    computed = (
+        "v0="
+        + hmac.new(
+            secret.encode(),
+            basestring.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+    )
 
     if not hmac.compare_digest(computed, signature):
         log.error("Slack signature mismatch")

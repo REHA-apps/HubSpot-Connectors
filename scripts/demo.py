@@ -5,9 +5,9 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.core.logging import CorrelationAdapter, get_logger
-from app.services.event_router import EventRouter
-from app.services.integration_service import IntegrationService
-from app.integrations.slack_integration import SlackIntegration  # adjust import if needed
+from app.db.records import IntegrationRecord, Provider
+from app.domains.crm.event_router import EventRouter
+from app.domains.crm.integration_service import IntegrationService
 
 logger = get_logger("demo")
 
@@ -26,12 +26,13 @@ async def run_demo() -> None:
     # ---------------------------------------------------------
     integration_service = IntegrationService(corr_id=corr_id)
 
-    # Minimal SlackIntegration mock
-    from pydantic import SecretStr
-
-    slack_integration = SlackIntegration(
-        slack_bot_token=SecretStr("xoxb-your-demo-token"),
-        default_channel="#general",
+    # Minimal IntegrationRecord mock
+    slack_integration = IntegrationRecord(
+        id="demo_id",
+        workspace_id="demo_workspace",
+        provider=Provider.SLACK,
+        credentials={"slack_bot_token": "xoxb-your-demo-token"},
+        metadata={"channel_id": "#general"},
     )
 
     # ---------------------------------------------------------

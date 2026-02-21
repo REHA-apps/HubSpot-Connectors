@@ -63,11 +63,11 @@ class Settings(BaseSettings):
             "crm.objects.deals.write "
             "crm.objects.leads.read "
             "crm.objects.leads.write "
-            "crm.objects.custom.read "
+            "crm.objects.owners.read "
             "crm.schemas.companies.read "
-            "crm.objects.feedback_submissions.read "
+            "conversations.read "
+            "conversations.write "
             "tickets "
-            "e-commerce "
             "oauth"
         ),
         repr=False,
@@ -75,7 +75,11 @@ class Settings(BaseSettings):
     # "crm.schemas.contacts.read "
 
     SLACK_SCOPES: str = Field(
-        default=("commands chat:write chat:write.public users:read users:read.email"),
+        default=(
+            "commands chat:write chat:write.public users:read users:read.email "
+            "app_mentions:read im:history channels:history groups:history "
+            "mpim:history links:read links:write channels:read groups:read"
+        ),
         repr=False,
     )
 

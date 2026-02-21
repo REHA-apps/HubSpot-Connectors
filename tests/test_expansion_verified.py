@@ -79,7 +79,7 @@ async def test_notification_service_high_priority_ticket():
         mock_hubspot.get_object = AsyncMock(return_value=create_ticket(priority="HIGH"))
 
         mock_channel = MockChannel.return_value
-        mock_channel.send_slack_card = AsyncMock()
+        mock_channel.send_card = AsyncMock()
 
         service = NotificationService("test-corr-id")
 
@@ -92,8 +92,8 @@ async def test_notification_service_high_priority_ticket():
         await service.handle_event(event)
 
         # Verify notification was sent
-        mock_channel.send_slack_card.assert_called_once()
-        call_args = mock_channel.send_slack_card.call_args
+        mock_channel.send_card.assert_called_once()
+        call_args = mock_channel.send_card.call_args
         assert call_args.kwargs["obj"]["properties"]["hs_ticket_priority"] == "HIGH"
 
 
@@ -115,7 +115,7 @@ async def test_notification_service_low_priority_ticket_skipped():
         mock_hubspot.get_object = AsyncMock(return_value=create_ticket(priority="LOW"))
 
         mock_channel = MockChannel.return_value
-        mock_channel.send_slack_card = AsyncMock()
+        mock_channel.send_card = AsyncMock()
 
         service = NotificationService("test-corr-id")
 
@@ -128,4 +128,4 @@ async def test_notification_service_low_priority_ticket_skipped():
         await service.handle_event(event)
 
         # Verify NO notification was sent
-        mock_channel.send_slack_card.assert_not_called()
+        mock_channel.send_card.assert_not_called()

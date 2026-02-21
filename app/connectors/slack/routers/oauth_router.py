@@ -8,13 +8,13 @@ from fastapi.responses import RedirectResponse
 
 from app.core.dependencies import get_integration_service
 from app.core.logging import CorrelationAdapter, get_corr_id, get_logger
+from app.core.security.state_validator import verify_state
 from app.db.records import Provider
 from app.domains.crm.channel_service import ChannelService
 from app.domains.crm.integration_service import IntegrationService
 from app.utils.constants import ErrorCode
 from app.utils.ui import render_success_page
 
-router = APIRouter(prefix="/slack/oauth", tags=["slack-oauth"])
 router = APIRouter(prefix="/slack/oauth", tags=["slack-oauth"])
 
 logger = get_logger("slack.oauth")
@@ -33,7 +33,22 @@ async def slack_oauth_callback(
 
     log.info("Received Slack OAuth callback code=%s state=%s", code, state)
 
-    # Optional: handle Slack OAuth errors
+    # 1. CSRF Protection: Verify signed state
+    if not state:
+        log.warning("Missing state in OAuth callback")
+        raise HTTPException(
+            status_code=ErrorCode.BAD_REQUEST, detail="Security error: Missing state"
+        )
+
+    workspace_context = verify_state(state)
+    if not workspace_context:
+        log.warning("Invalid or expired state: %s", state)
+        raise HTTPException(
+            status_code=ErrorCode.BAD_REQUEST,
+            detail="Security error: Invalid or expired state",
+        )
+
+    # 2. handle Slack OAuth errors
     error = request.query_params.get("error")
     if error:
         log.warning("Slack OAuth error=%s", error)
@@ -46,7 +61,7 @@ async def slack_oauth_callback(
 
         workspace_id = await integration_service.handle_slack_oauth_callback(
             code=code,
-            state=state,
+            state=workspace_context,
         )
 
         slack_integration = await integration_service.get_integration(

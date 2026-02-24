@@ -129,24 +129,33 @@ class SlackRenderer:
             # Map UnifiedCard actions to Slack action_ids for dispatch.
             # Append value to ensure uniqueness (Slack requires unique
             # action_id per actions block when multiple buttons exist).
-            if action.value.startswith("view:"):
-                button["action_id"] = f"view_object:{action.value}"
-            elif action.value.startswith("select:"):
-                button["action_id"] = f"select_object:{action.value}"
-            elif "add_note" in action.value:
-                button["action_id"] = f"open_add_note_modal:{action.value}"
-            elif action.value.startswith("view_contact_deals"):
-                button["action_id"] = f"view_contact_deals:{action.value}"
-            elif action.value.startswith("view_contact_company"):
-                button["action_id"] = f"view_contact_company:{action.value}"
-            elif "view_deals" in action.value:
-                button["action_id"] = f"view_deals:{action.value}"
-            elif "view_contacts" in action.value:
-                button["action_id"] = f"view_contacts:{action.value}"
-            elif action.value.startswith("view_contact_meetings"):
-                button["action_id"] = f"view_contact_meetings:{action.value}"
-            elif "schedule_meeting" in action.value:
-                button["action_id"] = f"open_schedule_meeting_modal:{action.value}"
+            # Map UnifiedCard actions to Slack action_ids for dispatch.
+            # Append value to ensure uniqueness (Slack requires unique
+            # action_id per actions block when multiple buttons exist).
+            action_map = {
+                "view:": "view_object",
+                "select:": "select_object",
+                "add_note": "open_add_note_modal",
+                "view_contact_deals": "view_contact_deals",
+                "view_contact_company": "view_contact_company",
+                "view_company_deals": "view_company_deals",
+                "view_deals": "view_deals",
+                "view_contacts": "view_contacts",
+                "view_contact_meetings": "view_contact_meetings",
+                "schedule_meeting": "open_schedule_meeting_modal",
+                "update_lead_source": "open_update_lead_source_modal",
+                "update_lead_type": "open_update_lead_type_modal",
+                "update_forecast_amount": "open_update_forecast_amount_modal",
+                "ai_recap": "open_ai_recap_modal",
+                "open_calculator": "open_calculator",
+                "reassign_owner": "reassign_owner",
+            }
+
+            action_id = next(
+                (prefix for prefix in action_map if prefix in action.value), None
+            )
+            if action_id:
+                button["action_id"] = f"{action_map[action_id]}:{action.value}"
 
             elements.append(button)
 

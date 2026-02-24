@@ -17,6 +17,29 @@ def _cached_to_hubspot_timestamp(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
 
+def to_hubspot_iso8601(dt: datetime) -> str:
+    """Description:
+        Formats a Python datetime as a HubSpot-compatible ISO 8601 string (UTC).
+        HubSpot expects millisecond precision: YYYY-MM-DDTHH:MM:SS.mmmZ
+
+    Args:
+        dt (datetime): The datetime to format.
+
+    Returns:
+        str: ISO 8601 formatted string in UTC.
+
+    """
+    if dt.tzinfo is None:
+        # Naive datetime: assume UTC for simplicity or treat as local?
+        # Standardize to UTC for HubSpot.
+        dt = dt.replace(tzinfo=UTC)
+    else:
+        dt = dt.astimezone(UTC)
+
+    # Format: 2019-10-30T03:30:17.883Z
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 def to_hubspot_timestamp(
     dt: datetime,
     *,
@@ -119,3 +142,41 @@ def flatten_properties(
 
     log.debug("Flattened HubSpot object: %s", flattened)
     return flattened
+
+
+def to_datetime(value: Any) -> datetime:
+    """Description:
+        Converts a HubSpot property value (int milliseconds or ISO 8601 string)
+        into a Python datetime object (UTC).
+
+    Args:
+        value (Any): The value to convert.
+
+    Returns:
+        datetime: UTC-aware datetime object. Defaults to epoch if unparsable.
+
+    """
+    if not value:
+        return datetime.fromtimestamp(0, tz=UTC)
+
+    # Handle numeric (millisecond timestamps)
+    if isinstance(value, int | float):
+        return datetime.fromtimestamp(float(value) / 1000.0, tz=UTC)
+
+    if isinstance(value, str):
+        # Handle numeric strings
+        if value.replace(".", "", 1).isdigit():
+            return datetime.fromtimestamp(float(value) / 1000.0, tz=UTC)
+
+        # Handle ISO 8601 strings
+        try:
+            # datetime.fromisoformat handles 'Z' in 3.11+
+            # Replacing Z for backwards safety if needed, though we're on 3.12
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC)
+        except ValueError:
+            return datetime.fromtimestamp(0, tz=UTC)
+
+    return datetime.fromtimestamp(0, tz=UTC)

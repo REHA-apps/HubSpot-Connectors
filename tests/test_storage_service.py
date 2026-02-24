@@ -38,7 +38,7 @@ def storage():
 @pytest_asyncio.fixture(autouse=True)
 async def clear_caches():
     """Clear module-level caches between tests."""
-    from app.db import storage_service as mod
+    from app.db import storage_service as mod  # noqa: PLC0415
 
     await mod._record_cache.clear()
     await mod._slack_mapping_cache.clear()
@@ -163,7 +163,7 @@ async def test_upsert_invalidates_mapping_caches(storage):
     # Populate both caches
     await storage.get_integration_by_slack_team_id("T123")
 
-    from app.db.storage_service import _slack_mapping_cache
+    from app.db.storage_service import _slack_mapping_cache  # noqa: PLC0415
 
     assert await _slack_mapping_cache.get("T123") == "ws-1"
 
@@ -183,7 +183,7 @@ async def test_upsert_invalidates_mapping_caches(storage):
 @pytest.mark.asyncio
 async def test_mapping_miss_self_healing(storage):
     """If mapping exists but record is missing in DB, mapping should be purged."""
-    from app.db.storage_service import _slack_mapping_cache
+    from app.db.storage_service import _slack_mapping_cache  # noqa: PLC0415
 
     # Manually seed a stale mapping
     await _slack_mapping_cache.set("T-stale", "ws-stale")

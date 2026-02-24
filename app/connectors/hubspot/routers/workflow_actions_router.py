@@ -6,10 +6,10 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends
 from pydantic import BaseModel
 
+from app.connectors.slack.services.channel_service import ChannelService
 from app.core.dependencies import get_integration_service
 from app.core.logging import get_corr_id
 from app.db.records import Provider
-from app.domains.crm.channel_service import ChannelService
 from app.domains.crm.integration_service import IntegrationService
 
 router = APIRouter(prefix="/integrations/hubspot", tags=["hubspot-workflow-actions"])

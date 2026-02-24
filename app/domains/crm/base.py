@@ -72,6 +72,16 @@ class BaseCRMService(ABC):
         """Create a new meeting in the CRM."""
         pass
 
+    @abstractmethod
+    async def update_deal(
+        self,
+        workspace_id: str,
+        deal_id: str,
+        properties: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Update properties of a deal in the CRM."""
+        pass
+
 
 class BaseChannelService(ABC):
     """Abstract base class for messaging channel services (Slack, WhatsApp).
@@ -87,7 +97,7 @@ class BaseChannelService(ABC):
         text: str | None = None,
         blocks: list[dict[str, Any]] | None = None,
         metadata: Mapping[str, Any] | None = None,
-    ) -> None:
+    ) -> Mapping[str, Any] | None:
         """Sends a generic message to the channel."""
         pass
 
@@ -99,6 +109,6 @@ class BaseChannelService(ABC):
         obj: Mapping[str, Any],
         channel: str | None = None,
         analysis: Any = None,
-    ) -> None:
+    ) -> str | None:
         """Sends a rich CRM object card to the channel."""
         pass

@@ -2,6 +2,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.registry import registry
+from app.db.records import PlanTier
 from app.domains.ai.service import AIService, AITaskAnalysis, AITicketAnalysis
 from app.domains.crm.notification_service import NotificationService
 
@@ -63,8 +65,13 @@ async def test_notification_service_high_priority_ticket():
     with (
         patch("app.domains.crm.notification_service.StorageService") as MockStorage,
         patch("app.domains.crm.notification_service.HubSpotService") as MockHubSpot,
-        patch("app.domains.crm.notification_service.ChannelService") as MockChannel,
+        patch(
+            "app.connectors.slack.services.channel_service.ChannelService"
+        ) as MockChannel,
     ):
+        # Setup Registry
+        registry.register("slack", channel_service=MockChannel)
+
         # Setup Mocks
         mock_storage = MockStorage.return_value
         mock_storage.get_integration_by_portal_id = AsyncMock(
@@ -73,6 +80,16 @@ async def test_notification_service_high_priority_ticket():
         mock_storage.get_integration = AsyncMock(
             return_value=MagicMock()
         )  # Slack integration exists
+        mock_storage.get_workspace = AsyncMock(
+            return_value=MagicMock(tier=PlanTier.PRO)
+        )
+        mock_storage.get_thread_mapping = AsyncMock(return_value=None)
+        mock_storage.upsert_thread_mapping = AsyncMock()
+        mock_storage.list_integrations = AsyncMock(
+            return_value=[mock_storage.get_integration.return_value]
+        )
+        mock_storage.get_thread_mapping = AsyncMock(return_value=None)
+        mock_storage.upsert_thread_mapping = AsyncMock()
 
         mock_hubspot = MockHubSpot.return_value
         # Return a High Priority Ticket
@@ -80,6 +97,7 @@ async def test_notification_service_high_priority_ticket():
 
         mock_channel = MockChannel.return_value
         mock_channel.send_card = AsyncMock()
+        mock_channel._resolve_channel = AsyncMock(return_value="#general")
 
         service = NotificationService("test-corr-id")
 
@@ -103,12 +121,19 @@ async def test_notification_service_low_priority_ticket_skipped():
     with (
         patch("app.domains.crm.notification_service.StorageService") as MockStorage,
         patch("app.domains.crm.notification_service.HubSpotService") as MockHubSpot,
-        patch("app.domains.crm.notification_service.ChannelService") as MockChannel,
+        patch(
+            "app.connectors.slack.services.channel_service.ChannelService"
+        ) as MockChannel,
     ):
+        # Setup Registry
+        registry.register("slack", channel_service=MockChannel)
+
         mock_storage = MockStorage.return_value
         mock_storage.get_integration_by_portal_id = AsyncMock(
             return_value=MagicMock(workspace_id="ws1")
         )
+        mock_storage.get_thread_mapping = AsyncMock(return_value=None)
+        mock_storage.upsert_thread_mapping = AsyncMock()
 
         mock_hubspot = MockHubSpot.return_value
         # Return a Low Priority Ticket
@@ -116,6 +141,7 @@ async def test_notification_service_low_priority_ticket_skipped():
 
         mock_channel = MockChannel.return_value
         mock_channel.send_card = AsyncMock()
+        mock_channel._resolve_channel = AsyncMock(return_value="#general")
 
         service = NotificationService("test-corr-id")
 

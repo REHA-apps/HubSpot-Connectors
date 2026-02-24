@@ -68,17 +68,17 @@ class AITaskAnalysis:
 
 
 @dataclass(frozen=True)
-class AIKnowledgeAnalysis:
-    summary: str
-    relevance: str
-    next_action: str
-
-
-@dataclass(frozen=True)
 class AIConversationAnalysis:
     summary: str
     status: str
     next_action: str
+
+
+@dataclass(frozen=True)
+class AIThreadSummary:
+    summary: str
+    key_points: list[str]
+    sentiment: str
 
 
 # Core AI Service
@@ -95,7 +95,6 @@ class AIService:
         self.company_ai = AICompanyService()
         self.ticket_ai = AITicketService()
         self.task_ai = AITaskService()
-        self.knowledge_ai = AIKnowledgeService()
 
     def set_corr_id(self, corr_id: str) -> None:
         """DEPRECATED: No longer needed with context-aware logging."""
@@ -350,7 +349,6 @@ class AIService:
         | AITaskAnalysis
         | AITicketAnalysis
         | AITaskAnalysis
-        | AIKnowledgeAnalysis
         | AIConversationAnalysis
     ):
         """Standardized entry point for analyzing any HubSpot object.
@@ -390,8 +388,6 @@ class AIService:
                 "deal": self.analyze_deal,
                 "ticket": self.analyze_ticket,
                 "task": self.analyze_task,
-                "knowledge_article": self.analyze_knowledge_article,
-                "knowledge": self.analyze_knowledge_article,
                 "conversation": self.analyze_conversation,
                 "thread": self.analyze_conversation,
             }
@@ -471,12 +467,6 @@ class AIService:
     async def analyze_task(self, task: Mapping[str, Any]) -> AITaskAnalysis:
         """Analyzes a Task using specialized logic."""
         return self.task_ai.analyze_task(task)
-
-    async def analyze_knowledge_article(
-        self, article: Mapping[str, Any]
-    ) -> AIKnowledgeAnalysis:
-        """Analyzes a Knowledge Base Article."""
-        return self.knowledge_ai.analyze_knowledge_article(article)
 
     async def analyze_conversation(
         self, thread: Mapping[str, Any]
@@ -575,6 +565,91 @@ class AIService:
     # -----------------------------------------------------
     # Intent detection
     # -----------------------------------------------------
+    # -----------------------------------------------------
+    # Thread Summarization
+    # -----------------------------------------------------
+    async def summarize_thread(self, messages: list[dict[str, Any]]) -> AIThreadSummary:
+        """Description:
+            Generates an AI-powered summary of a Slack thread.
+            Utilizes heuristics for key point extraction and sentiment analysis.
+
+        Args:
+            messages (list[dict[str, Any]]): List of Slack message dictionaries.
+
+        Returns:
+            AIThreadSummary: Structured summary with key points and sentiment.
+
+        """
+        if not messages:
+            return AIThreadSummary(
+                summary="No messages to summarize.", key_points=[], sentiment="Neutral"
+            )
+
+        # 1. Extract texts
+        texts = [m.get("text", "") for m in messages if m.get("text")]
+        combined_text = " ".join(texts)
+
+        # 2. Heuristic: Determine Sentiment
+        positive_words = {
+            "good",
+            "great",
+            "excellent",
+            "fixed",
+            "resolved",
+            "thanks",
+            "happy",
+        }
+        negative_words = {
+            "bug",
+            "error",
+            "failed",
+            "broken",
+            "issue",
+            "problem",
+            "urgent",
+        }
+
+        pos_count = sum(1 for word in positive_words if word in combined_text.lower())
+        neg_count = sum(1 for word in negative_words if word in combined_text.lower())
+
+        sentiment = "Neutral"
+        if pos_count > neg_count:
+            sentiment = "Positive"
+        elif neg_count > pos_count:
+            sentiment = "Negative"
+
+        # 3. Heuristic: Extract Key Points (Messages with question marks or
+        # exclamation marks)
+        key_points = []
+        for text in texts:
+            if "?" in text or "!" in text or len(text) > 100:  # noqa: PLR2004
+                clean_point = text.strip().replace("\n", " ")
+                MAX_POINT_LEN = 80
+                key_points.append(
+                    clean_point[:MAX_POINT_LEN] + "..."
+                    if len(clean_point) > MAX_POINT_LEN
+                    else clean_point
+                )
+
+        # 4. Generate Summary
+        msg_count = len(messages)
+        MAX_FIRST_MSG_LEN = 100
+        first_msg = (
+            texts[0][:MAX_FIRST_MSG_LEN] + "..."
+            if texts and len(texts[0]) > MAX_FIRST_MSG_LEN
+            else (texts[0] if texts else "")
+        )
+        summary_text = (
+            f"Thread with {msg_count} messages starting with: '{first_msg}'. "
+            f"Overall sentiment appears {sentiment}."
+        )
+
+        return AIThreadSummary(
+            summary=summary_text,
+            key_points=key_points[:5],
+            sentiment=sentiment,
+        )
+
     def detect_intent(self, query: str) -> str:
         """Detects the primary CRM object intent from a natural language query.
 
@@ -592,17 +667,6 @@ class AIService:
             "lead": ["lead", "mql", "sql", "prospect"],
             "ticket": ["ticket", "issue", "bug", "support", "incident"],
             "task": ["task", "todo", "follow-up", "reminder", "action item"],
-            "knowledge_article": [
-                "help",
-                "how to",
-                "guide",
-                "manual",
-                "doc",
-                "documentation",
-                "article",
-                "playbook",
-                "knowledge",
-            ],
         }
 
         for intent, keywords in intent_map.items():
@@ -751,26 +815,4 @@ class AITaskService:
 
         return AITaskAnalysis(
             summary=summary, status_label=status_label, next_action=next_action
-        )
-
-
-class AIKnowledgeService:
-    def analyze_knowledge_article(
-        self, article: Mapping[str, Any]
-    ) -> AIKnowledgeAnalysis:
-        """Analyzes relevance of a knowledge article."""
-        title = article.get("title") or article.get("name") or "Untitled Article"
-        # Content search API returns 'description' or 'snippet'
-        description = (
-            article.get("description") or article.get("searchDescription") or ""
-        )
-
-        summary = f"{title}"
-        if description:
-            summary += f" — {description[:100]}..."
-
-        return AIKnowledgeAnalysis(
-            summary=summary,
-            relevance="High Match" if title else "Unknown",
-            next_action="Share this guide with the customer.",
         )

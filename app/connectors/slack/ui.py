@@ -11,10 +11,14 @@ from app.domains.ai.service import (
     AIContactAnalysis,
     AIConversationAnalysis,
     AIDealAnalysis,
-    AIKnowledgeAnalysis,
     AITaskAnalysis,
+    AIThreadSummary,
     AITicketAnalysis,
 )
+from app.utils.transformers import to_datetime
+
+MAX_LIST_DISPLAY = 25
+MAX_OWNERS_DISPLAY = 100
 
 
 class CardBuilder:
@@ -27,14 +31,108 @@ class CardBuilder:
           and Tasks.
     """
 
+    def build_card_modal(self, card: UnifiedCard, title: str = "Details") -> dict:
+        """Wraps a UnifiedCard into a Slack Modal payload.
+
+        Args:
+            card (UnifiedCard): The unified card data structure to render.
+            title (str, optional): The title of the modal. Defaults to "Details".
+
+        Returns:
+            dict: A Slack modal payload containing the rendered card blocks.
+
+        """
+        from app.connectors.slack.renderer import SlackRenderer  # noqa: PLC0415
+
+        renderer = SlackRenderer()
+        payload = renderer.render(card)
+
+        return {
+            "type": "modal",
+            "title": {"type": "plain_text", "text": title[:24]},
+            "blocks": payload["blocks"],
+            "close": {"type": "plain_text", "text": "Close"},
+        }
+
+    def build_app_home_view(self) -> dict[str, Any]:
+        """Provides a static Home tab dashboard layout for the App Home view.
+
+        Returns:
+            dict[str, Any]: The Slack Home tab view payload.
+
+        """
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "🏠 Welcome to HubSpot CRM Connector",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "Search HubSpot contacts, companies, deals, tickets, and tasks "
+                        "directly from Slack. Access CRM data seamlessly without "
+                        "switching apps!"
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "⚡ Available Commands",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "- `/hs <query>` - Smart AI search across entire CRM\n"
+                        "- `/hs` `/hs help` `/hs-help` - "
+                        "Show help and available commands\n"
+                        "- `/hs report` `/hs-reports` - View HubSpot dashboards\n"
+                        "- `/hs-companies <domain or name>` - Search Companies\n"
+                        "- `/hs-contacts <email or name>` - Search Contacts\n"
+                        "- `/hs-deals <deal name>` - Search Deals\n"
+                        "- `/hs-tickets <subject or ID>` - Search Tickets\n"
+                        "- `/hs-tasks <task name>` - Search Tasks"
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "💡 *Quick Tip*: You can quickly create new CRM records "
+                        "directly in Slack using the `Create HubSpot Record` "
+                        "shortcut from the global Shortcuts menu."
+                    ),
+                },
+            },
+        ]
+
+        return {"type": "home", "blocks": blocks}
+
     def build_contact(
-        self, obj: Mapping[str, Any], analysis: AIContactAnalysis
+        self, obj: Mapping[str, Any], analysis: AIContactAnalysis, is_pro: bool = False
     ) -> UnifiedCard:
         """Builds a UnifiedCard representation for a HubSpot Contact.
 
         Args:
             obj (Mapping[str, Any]): Raw HubSpot contact object.
             analysis (AIContactAnalysis): Pre-calculated AI insights and scores.
+            is_pro (bool, optional): Whether the workspace is in the PRO tier.
+                Defaults to False.
 
         Returns:
             UnifiedCard: The rendered IR for Slack or other platforms.
@@ -48,6 +146,7 @@ class CardBuilder:
             title=name or email,
             subtitle="Contact",
             emoji="👤",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
             metrics=[
                 ("Email", str(props.get("email") or "N/A")),
                 ("Phone", str(props.get("phone") or "N/A")),
@@ -95,16 +194,18 @@ class CardBuilder:
         )
 
     def build_lead(
-        self, obj: Mapping[str, Any], analysis: AIContactAnalysis
+        self, obj: Mapping[str, Any], analysis: AIContactAnalysis, is_pro: bool = False
     ) -> UnifiedCard:
         """Builds a UnifiedCard representation for a HubSpot Lead.
 
         Args:
             obj (Mapping[str, Any]): Raw HubSpot lead object.
             analysis (AIContactAnalysis): Pre-calculated AI insights and scores.
+            is_pro (bool, optional): Whether the workspace is in the PRO tier.
+                Defaults to False.
 
         Returns:
-            UnifiedCard: The rendered IR.
+            UnifiedCard: The rendered IR for Slack or other platforms.
 
         """
         props = obj["properties"]
@@ -115,6 +216,7 @@ class CardBuilder:
             title=f"Lead: {name or email}",
             subtitle="Lead",
             emoji="🧲",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
             metrics=[
                 ("Email", email),
                 ("Score", str(analysis.score)),
@@ -123,19 +225,44 @@ class CardBuilder:
             secondary_content=[
                 ("Next Best Action", analysis.next_best_action),
             ],
+            actions=[
+                CardAction(
+                    label="Set Meeting Date",
+                    action_type="modal",
+                    value=f"schedule_meeting:{obj['id']}",
+                ),
+                CardAction(
+                    label="Update Budget",
+                    action_type="modal",
+                    value=f"update_forecast_amount:{obj['id']}",
+                ),
+                CardAction(
+                    label="Reassign Owner",
+                    action_type="modal",
+                    value=f"reassign_owner:contact:{obj['id']}",
+                ),
+            ],
         )
 
     def build_company(
-        self, obj: Mapping[str, Any], analysis: AICompanyAnalysis
+        self,
+        obj: Mapping[str, Any],
+        analysis: AICompanyAnalysis,
+        include_actions: bool = True,
+        is_pro: bool = False,
     ) -> UnifiedCard:
         """Builds a UnifiedCard representation for a HubSpot Company.
 
         Args:
             obj (Mapping[str, Any]): Raw HubSpot company object.
             analysis (AICompanyAnalysis): Pre-calculated company health insights.
+            include_actions (bool, optional): Whether to include action buttons.
+                Defaults to True.
+            is_pro (bool, optional): Whether the workspace is in the PRO tier.
+                Defaults to False.
 
         Returns:
-            UnifiedCard: The rendered IR.
+            UnifiedCard: The rendered IR for Slack or other platforms.
 
         """
         props = obj["properties"]
@@ -145,6 +272,7 @@ class CardBuilder:
             title=name,
             subtitle="Company",
             emoji="🏢",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
             metrics=[
                 ("Domain", str(props.get("domain") or "N/A")),
                 ("Page Views", str(props.get("hs_analytics_num_page_views") or "0")),
@@ -161,23 +289,29 @@ class CardBuilder:
                     action_type="url",
                     value="open_hubspot",
                     url=obj.get("hs_url", "https://app.hubspot.com"),
-                ),
-                CardAction(
-                    label="View Deals",
-                    action_type="callback",
-                    value=f"view_deals:{obj['id']}",
-                ),
-                CardAction(
-                    label="View Contacts",
-                    action_type="callback",
-                    value=f"view_contacts:{obj['id']}",
-                ),
-                CardAction(
-                    label="Add Note",
-                    action_type="modal",
-                    value=f"add_note:company:{obj['id']}",
-                ),
-            ],
+                )
+            ]
+            + (
+                [
+                    CardAction(
+                        label="View Deals",
+                        action_type="callback",
+                        value=f"view_company_deals:{obj['id']}",
+                    ),
+                    CardAction(
+                        label="View Contacts",
+                        action_type="callback",
+                        value=f"view_contacts:{obj['id']}",
+                    ),
+                    CardAction(
+                        label="Add Note",
+                        action_type="modal",
+                        value=f"add_note:company:{obj['id']}",
+                    ),
+                ]
+                if include_actions
+                else []
+            ),
         )
 
     def build_deal(
@@ -185,16 +319,20 @@ class CardBuilder:
         obj: Mapping[str, Any],
         analysis: AIDealAnalysis,
         pipelines: list[dict[str, Any]] | None = None,
+        is_pro: bool = False,
     ) -> UnifiedCard:
         """Builds a UnifiedCard representation for a HubSpot Deal.
 
         Args:
             obj (Mapping[str, Any]): Raw HubSpot deal object.
             analysis (AIDealAnalysis): Pre-calculated deal insights and risk assessment.
-            pipelines (list[dict[str, Any]] | None): All deal pipelines/stages.
+            pipelines (list[dict[str, Any]] | None, optional): All deal
+                pipelines/stages. Defaults to None.
+            is_pro (bool, optional): Whether the workspace is in the PRO tier.
+                Defaults to False.
 
         Returns:
-            UnifiedCard: The rendered IR.
+            UnifiedCard: The rendered IR for Slack or other platforms.
 
         """
         props = obj["properties"]
@@ -254,10 +392,42 @@ class CardBuilder:
                 ),
             )
 
+        # Pro-only buttons
+        if is_pro:
+            actions.append(
+                CardAction(
+                    label="Update Lead Type",
+                    action_type="modal",
+                    value=f"update_lead_type:{obj['id']}",
+                )
+            )
+            actions.append(
+                CardAction(
+                    label="Calculator",
+                    action_type="modal",
+                    value=f"open_calculator:{obj['id']}",
+                )
+            )
+            actions.append(
+                CardAction(
+                    label="Reassign Owner",
+                    action_type="modal",
+                    value=f"reassign_owner:deal:{obj['id']}",
+                )
+            )
+            actions.append(
+                CardAction(
+                    label="Schedule Meeting",
+                    action_type="modal",
+                    value=f"schedule_meeting:{obj['id']}",
+                )
+            )
+
         return UnifiedCard(
             title=name,
             subtitle=f"Deal • Stage: {stage_label}",
             emoji="💰",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
             metrics=[
                 ("Pipeline", pipeline_label),
                 ("Amount", str(props.get("amount") or "N/A")),
@@ -305,6 +475,15 @@ class CardBuilder:
         )
 
     def build_company_ai(self, analysis: AICompanyAnalysis) -> UnifiedCard:
+        """Builds a UnifiedCard for Company-specific AI insights.
+
+        Args:
+            analysis (AICompanyAnalysis): The company AI analysis data.
+
+        Returns:
+            UnifiedCard: The rendered IR.
+
+        """
         return UnifiedCard(
             title="Company Insights",
             emoji="🏢",
@@ -316,6 +495,15 @@ class CardBuilder:
         )
 
     def build_deal_ai(self, analysis: AIDealAnalysis) -> UnifiedCard:
+        """Builds a UnifiedCard for Deal-specific AI insights.
+
+        Args:
+            analysis (AIDealAnalysis): The deal AI analysis data.
+
+        Returns:
+            UnifiedCard: The rendered IR.
+
+        """
         return UnifiedCard(
             title="Deal Insights",
             emoji="💰",
@@ -327,16 +515,18 @@ class CardBuilder:
         )
 
     def build_ticket(
-        self, obj: Mapping[str, Any], analysis: AITicketAnalysis
+        self, obj: Mapping[str, Any], analysis: AITicketAnalysis, is_pro: bool = False
     ) -> UnifiedCard:
         """Builds a UnifiedCard representation for a HubSpot Ticket.
 
         Args:
             obj (Mapping[str, Any]): Raw HubSpot ticket object.
             analysis (AITicketAnalysis): Pre-calculated ticket urgency insights.
+            is_pro (bool, optional): Whether the workspace is in the PRO tier.
+                Defaults to False.
 
         Returns:
-            UnifiedCard: The rendered IR.
+            UnifiedCard: The rendered IR for Slack or other platforms.
 
         """
         props = obj["properties"]
@@ -347,6 +537,7 @@ class CardBuilder:
             title=f"Ticket #{ticket_id}: {subject}",
             subtitle=f"Ticket • Stage: {props.get('hs_pipeline_stage', 'Unknown')}",
             emoji="🎫",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
             metrics=[
                 ("Priority", props.get("hs_ticket_priority") or "—"),
                 ("Urgency", analysis.urgency),
@@ -367,6 +558,11 @@ class CardBuilder:
                     action_type="modal",
                     value=f"add_note:ticket:{obj['id']}",
                 ),
+                CardAction(
+                    label="AI Recap",
+                    action_type="modal",
+                    value=f"ai_recap:ticket:{obj['id']}",
+                ),
             ],
         )
 
@@ -375,16 +571,20 @@ class CardBuilder:
         obj: Mapping[str, Any],
         analysis: AITaskAnalysis,
         context: dict[str, Any] | None = None,
+        is_pro: bool = False,
     ) -> UnifiedCard:
         """Builds a UnifiedCard representation for a HubSpot Task.
 
         Args:
             obj (Mapping[str, Any]): Raw HubSpot task object.
             analysis (AITaskAnalysis): Pre-calculated task status insights.
-            context (dict[str, Any] | None): Enriched context (owner, associations).
+            context (dict[str, Any] | None, optional): Enriched context
+                (owner, associations). Defaults to None.
+            is_pro (bool, optional): Whether the workspace is in the PRO tier.
+                Defaults to False.
 
         Returns:
-            UnifiedCard: The rendered IR.
+            UnifiedCard: The rendered IR for Slack or other platforms.
 
         """
         props = obj["properties"]
@@ -422,6 +622,7 @@ class CardBuilder:
             title=subject,
             subtitle=f"{task_type} • Status: {status}",
             emoji="✅",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
             metrics=[
                 ("Due", due_date),
                 ("Priority", priority),
@@ -451,45 +652,19 @@ class CardBuilder:
             ],
         )
 
-    def build_knowledge_article(
-        self, obj: Mapping[str, Any], analysis: AIKnowledgeAnalysis
-    ) -> UnifiedCard:
-        """Builds a UnifiedCard for a Knowledge Base Article."""
-        # obj is from content search API
-        title = obj.get("title") or obj.get("name") or "Untitled Article"
-        # Content search often returns 'url' or 'absoluteUrl'
-        url = obj.get("url") or obj.get("absoluteUrl") or "https://app.hubspot.com"
-        snippet = self._strip_html(
-            obj.get("description") or obj.get("searchDescription") or ""
-        )
-
-        return UnifiedCard(
-            title=title,
-            subtitle="Knowledge Base Article",
-            emoji="📚",
-            metrics=[
-                ("Relevance", analysis.relevance),
-            ],
-            content=snippet,
-            actions=[
-                CardAction(
-                    label="Read Article",
-                    action_type="url",
-                    value="open_article",
-                    url=url,
-                )
-            ],
-        )
-
     def build_deals_list(self, deals: list[dict]) -> UnifiedCard:
         """Build a card showing a list of associated deals."""
         content_parts = []
-        for deal in deals:
+        display_deals = deals[:25]
+        for deal in display_deals:
             props = deal.get("properties", {})
             name = props.get("dealname") or "Unnamed Deal"
             amount = props.get("amount") or "N/A"
             stage = props.get("dealstage") or "unknown"
             content_parts.append(f"*{name}*\nAmount: `{amount}` • Stage: `{stage}`")
+
+        if len(deals) > MAX_LIST_DISPLAY:
+            content_parts.append(f"\n_...and {len(deals) - 25} more deals._")
 
         return UnifiedCard(
             title="Associated Deals",
@@ -500,7 +675,8 @@ class CardBuilder:
     def build_contacts_list(self, contacts: list[dict]) -> UnifiedCard:
         """Build a card showing a list of associated contacts."""
         content_parts = []
-        for contact in contacts:
+        display_contacts = contacts[:25]
+        for contact in display_contacts:
             props = contact.get("properties", {})
             name = f"{props.get('firstname', '')} {props.get('lastname', '')}".strip()
             email = props.get("email") or "N/A"
@@ -508,6 +684,9 @@ class CardBuilder:
             content_parts.append(
                 f"*{name or email}*\nEmail: `{email}` • Stage: `{lifecycle}`"
             )
+
+        if len(contacts) > MAX_LIST_DISPLAY:
+            content_parts.append(f"\n_...and {len(contacts) - 25} more contacts._")
 
         return UnifiedCard(
             title="Associated Contacts",
@@ -520,7 +699,8 @@ class CardBuilder:
     def build_meetings_list(self, meetings: list[dict]) -> UnifiedCard:
         """Build a card showing a list of associated meetings."""
         content_parts = []
-        for meeting in meetings:
+        display_meetings = meetings[:25]
+        for meeting in display_meetings:
             props = meeting.get("properties", {})
             title = props.get("hs_meeting_title") or "Untitled Meeting"
 
@@ -528,16 +708,16 @@ class CardBuilder:
             start_ts = props.get("hs_meeting_start_time")
             start_str = "No time set"
             if start_ts:
-                try:
-                    dt = datetime.fromtimestamp(int(start_ts) / 1000)
-                    start_str = dt.strftime("%Y-%m-%d %H:%M")
-                except (ValueError, TypeError):
-                    pass
+                dt = to_datetime(start_ts)
+                start_str = dt.strftime("%Y-%m-%d %H:%M")
 
             outcome = props.get("hs_meeting_outcome", "No outcome")
             content_parts.append(
                 f"📅 *{title}*\nTime: `{start_str}` • Outcome: `{outcome}`"
             )
+
+        if len(meetings) > MAX_LIST_DISPLAY:
+            content_parts.append(f"\n_...and {len(meetings) - 25} more meetings._")
 
         return UnifiedCard(
             title="Associated Meetings",
@@ -547,12 +727,12 @@ class CardBuilder:
             else "No meetings found.",
         )
 
-    def build_meeting_modal(self, contact_id: str) -> dict:
+    def build_meeting_modal(self, contact_id: str, metadata: str | None = None) -> dict:
         """Builds the Slack Modal for scheduling a meeting in HubSpot."""
         return {
             "type": "modal",
             "callback_id": "schedule_meeting_modal",
-            "private_metadata": contact_id,
+            "private_metadata": metadata or contact_id,
             "title": {"type": "plain_text", "text": "Schedule Meeting"},
             "submit": {"type": "plain_text", "text": "Create"},
             "close": {"type": "plain_text", "text": "Cancel"},
@@ -607,10 +787,26 @@ class CardBuilder:
 
     def build_empty(self, message: str) -> UnifiedCard:
         return UnifiedCard(
-            title="Not Found",
-            emoji="😕",
+            title="Notification",
+            emoji="ℹ️",
             content=message,
         )
+
+    def build_loading_modal(self, title: str = "Loading...") -> dict:
+        """Builds a simple loading modal payload."""
+        return {
+            "type": "modal",
+            "title": {"type": "plain_text", "text": title[:24]},
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "⏳ *Fetching data from HubSpot...* Please wait.",
+                    },
+                }
+            ],
+        }
 
     def build_search_results(self, results: list[dict]) -> UnifiedCard:
         if not results:
@@ -620,11 +816,14 @@ class CardBuilder:
         actions = []
         for r in results:
             props = r.get("properties", {})
+
+            # CRM objects use 'properties', CMS objects (like KB) use root attributes
             name = (
                 props.get("name")
                 or props.get("dealname")
                 or props.get("subject")
                 or props.get("hs_task_subject")
+                or r.get("title")  # For Knowledge Articles
                 or "Unknown"
             )
 
@@ -634,9 +833,11 @@ class CardBuilder:
                 or props.get("email")
                 or props.get("dealstage")
                 or props.get("hs_pipeline_stage")
+                or r.get("description")  # For Knowledge Articles
                 or ""
             )
             label = f"{name} ({detail})" if detail else name
+
             # Truncate to 75 chars for Slack button text limit
             if len(label) > 75:  # noqa: PLR2004
                 label = label[:72] + "..."
@@ -709,10 +910,10 @@ class CardBuilder:
         | AIDealAnalysis
         | AITicketAnalysis
         | AITaskAnalysis
-        | AIKnowledgeAnalysis
         | AIConversationAnalysis,
         pipelines: list[dict[str, Any]] | None = None,
         task_context: dict[str, Any] | None = None,
+        is_pro: bool = False,
     ) -> UnifiedCard:
         """Description:
         Unified entry point for building any CRM object card as a UnifiedCard IR.
@@ -720,15 +921,12 @@ class CardBuilder:
         obj_type = str(obj.get("type", "")).lower()
 
         if obj_type == "deal":
-            return self.build_deal(obj, cast(AIDealAnalysis, analysis), pipelines)
+            return self.build_deal(
+                obj, cast(AIDealAnalysis, analysis), pipelines, is_pro=is_pro
+            )
 
         if obj_type == "task":
             return self.build_task(obj, cast(AITaskAnalysis, analysis), task_context)
-
-        if obj_type in ("knowledge_article", "knowledge"):
-            return self.build_knowledge_article(
-                obj, cast(AIKnowledgeAnalysis, analysis)
-            )
 
         # Dispatch registry
         registry = {
@@ -787,12 +985,43 @@ class CardBuilder:
 
         return self.build_contact(obj, cast(AIContactAnalysis, analysis))
 
-    def build_note_modal(self, object_type: str, object_id: str) -> dict:
+    def build_update_lead_type_modal(
+        self, deal_id: str, current_value: str = "", metadata: str | None = None
+    ) -> dict:
+        """Builds the Slack Modal for updating a deal's Lead Type."""
+        return {
+            "type": "modal",
+            "callback_id": "update_lead_type_modal",
+            "private_metadata": metadata or deal_id,
+            "title": {"type": "plain_text", "text": "Update Lead Type"},
+            "submit": {"type": "plain_text", "text": "Update"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "lead_type_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "lead_type_input",
+                        "initial_value": current_value,
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "e.g. New Business, Renewal, etc.",
+                        },
+                    },
+                    "label": {"type": "plain_text", "text": "Lead Type"},
+                },
+            ],
+        }
+
+    def build_note_modal(
+        self, object_type: str, object_id: str, metadata: str | None = None
+    ) -> dict:
         """Builds the Slack Modal for logging a note to HubSpot."""
         return {
             "type": "modal",
             "callback_id": "add_note_modal",
-            "private_metadata": f"{object_type}:{object_id}",
+            "private_metadata": metadata or f"{object_type}:{object_id}",
             "title": {"type": "plain_text", "text": "Log a Note"},
             "submit": {"type": "plain_text", "text": "Save"},
             "close": {"type": "plain_text", "text": "Cancel"},
@@ -812,6 +1041,268 @@ class CardBuilder:
                     "label": {"type": "plain_text", "text": "Note Content"},
                 }
             ],
+        }
+
+    def build_post_mortem_modal(
+        self, deal_id: str, stage_id: str, metadata: str | None = None
+    ) -> dict:
+        """Builds the Win/Loss post-mortem modal."""
+        is_won = "won" in stage_id.lower()
+        title = "Closed Won Details" if is_won else "Closed Lost Details"
+
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Almost there!* Please provide details for this deal "
+                        "status change."
+                    ),
+                },
+            }
+        ]
+
+        if is_won:
+            blocks.append(
+                self._input(
+                    "Closed Won Reason",
+                    "closed_won_reason",
+                    placeholder="What was the key factor in winning?",
+                )
+            )
+        else:
+            blocks.append(
+                self._select(
+                    "Closed Lost Reason",
+                    "closed_lost_reason",
+                    [
+                        ("Price", "price"),
+                        ("Product Fit", "product_fit"),
+                        ("Lost to Competitor", "competitor"),
+                        ("Project Shelved", "shelved"),
+                    ],
+                )
+            )
+
+        return {
+            "type": "modal",
+            "callback_id": "post_mortem_submission",
+            "private_metadata": metadata or f"{deal_id}:{stage_id}",
+            "title": {"type": "plain_text", "text": title},
+            "submit": {"type": "plain_text", "text": "Save & Close"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": blocks,
+        }
+
+    def build_pricing_calculator_modal(
+        self, deal_id: str, current_amount: float = 0.0, metadata: str | None = None
+    ) -> dict:
+        """Builds the pricing calculator modal."""
+        return {
+            "type": "modal",
+            "callback_id": "calculator_submission",
+            "private_metadata": metadata or deal_id,
+            "title": {"type": "plain_text", "text": "Deal Calculator"},
+            "submit": {"type": "plain_text", "text": "Calculate & Update"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"Current Amount: `${current_amount:,}`",
+                    },
+                },
+                self._input("Quantity", "quantity", placeholder="10"),
+                self._input("Unit Price", "unit_price", placeholder="100.00"),
+                self._input("Discount %", "discount_percent", placeholder="15"),
+            ],
+        }
+
+    def build_next_step_enforcement_modal(
+        self, deal_id: str, stage_id: str, metadata: str | None = None
+    ) -> dict:
+        """Forces a Next Step input before stage change."""
+        return {
+            "type": "modal",
+            "callback_id": "next_step_enforcement_submission",
+            "private_metadata": metadata or f"{deal_id}:{stage_id}",
+            "title": {"type": "plain_text", "text": "Next Step Required"},
+            "submit": {"type": "plain_text", "text": "Update Status"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            "📈 *Stage Change Enforcement*\nYour manager requires a "
+                            "'Next Step' to be set before moving this deal forward."
+                        ),
+                    },
+                },
+                self._input(
+                    "Next Step",
+                    "next_step",
+                    placeholder="e.g. Schedule final demo with CTO",
+                ),
+            ],
+        }
+
+    def build_reassign_modal(
+        self, object_id: str, owners: list[dict], metadata: str | None = None
+    ) -> dict:
+        """Builds modal to reassign owner."""
+        owner_options = [(o["email"], o["id"]) for o in owners[:100]]
+        return {
+            "type": "modal",
+            "callback_id": "reassign_owner_submission",
+            "private_metadata": metadata or object_id,
+            "title": {"type": "plain_text", "text": "Reassign Owner"},
+            "submit": {"type": "plain_text", "text": "Reassign"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [
+                self._select("Select New Owner", "hubspot_owner_id", owner_options),
+            ],
+        }
+
+    def build_ai_recap_modal(
+        self,
+        object_type: str,
+        object_id: str,
+        summary: AIThreadSummary,
+        metadata: str | None = None,
+    ) -> dict[str, Any]:
+        """Builds the AI Recap review modal."""
+        # Clean summary for Slack
+        recap_text = summary.summary
+        key_points_text = "\n".join([f"• {p}" for p in summary.key_points])
+
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*AI Recap for {object_type.capitalize()} #{object_id}*",
+                },
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Summary:*\n{recap_text}"},
+            },
+        ]
+
+        if key_points_text:
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Key Points:*\n{key_points_text}",
+                    },
+                }
+            )
+
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"Sentiment: *{summary.sentiment}*"}
+                ],
+            }
+        )
+
+        return {
+            "type": "modal",
+            "callback_id": "ai_recap_submission_modal",
+            "private_metadata": metadata or f"{object_type}:{object_id}",
+            "title": {"type": "plain_text", "text": "Review AI Recap"},
+            "submit": {"type": "plain_text", "text": "Save to HubSpot"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": blocks,
+        }
+
+    def _input(
+        self,
+        label: str,
+        action_id: str,
+        placeholder: str = "",
+        initial_value: str = "",
+        multiline: bool = False,
+        optional: bool = False,
+    ) -> dict[str, Any]:
+        element: dict[str, Any] = {"type": "plain_text_input", "action_id": action_id}
+        if placeholder:
+            element["placeholder"] = {"type": "plain_text", "text": placeholder}
+        if initial_value:
+            element["initial_value"] = initial_value
+        if multiline:
+            element["multiline"] = True
+
+        return {
+            "type": "input",
+            "block_id": f"block_{action_id}",
+            "element": element,
+            "label": {"type": "plain_text", "text": label},
+            "optional": optional,
+        }
+
+    def _select(
+        self,
+        label: str,
+        action_id: str,
+        options: list[tuple[str, str]],
+        initial_option: str | None = None,
+        optional: bool = False,
+    ) -> dict[str, Any]:
+        select_options = [
+            {"text": {"type": "plain_text", "text": lbl}, "value": val}
+            for lbl, val in options
+        ]
+
+        element: dict[str, Any] = {
+            "type": "static_select",
+            "action_id": action_id,
+            "options": select_options,
+            "placeholder": {"type": "plain_text", "text": "Select..."},
+        }
+
+        if initial_option:
+            opt_obj = next(
+                (o for o in select_options if o["value"] == initial_option), None
+            )
+            if opt_obj:
+                element["initial_option"] = opt_obj
+
+        return {
+            "type": "input",
+            "block_id": f"block_{action_id}",
+            "element": element,
+            "label": {"type": "plain_text", "text": label},
+            "optional": optional,
+        }
+
+    def _datepicker(
+        self,
+        label: str,
+        action_id: str,
+        initial_date: str | None = None,
+        optional: bool = False,
+    ) -> dict[str, Any]:
+        element: dict[str, Any] = {
+            "type": "datepicker",
+            "action_id": action_id,
+        }
+        if initial_date:
+            element["initial_date"] = initial_date
+
+        return {
+            "type": "input",
+            "block_id": f"block_{action_id}",
+            "element": element,
+            "label": {"type": "plain_text", "text": label},
+            "optional": optional,
         }
 
 
@@ -844,6 +1335,10 @@ class ModalBuilder:
                             },
                             "options": [
                                 {
+                                    "text": {"type": "plain_text", "text": "Company"},
+                                    "value": "company",
+                                },
+                                {
                                     "text": {"type": "plain_text", "text": "Contact"},
                                     "value": "contact",
                                 },
@@ -859,10 +1354,6 @@ class ModalBuilder:
                                     "text": {"type": "plain_text", "text": "Ticket"},
                                     "value": "ticket",
                                 },
-                                {
-                                    "text": {"type": "plain_text", "text": "Company"},
-                                    "value": "company",
-                                },
                             ],
                         }
                     ],
@@ -871,12 +1362,13 @@ class ModalBuilder:
             "close": {"type": "plain_text", "text": "Cancel"},
         }
 
-    def build_creation_modal(
+    def build_creation_modal(  # noqa: PLR0912
         self,
         object_type: str,
         callback_id: str,
         pipelines: list[dict[str, Any]] | None = None,
         owners: list[dict[str, Any]] | None = None,
+        metadata: str | None = None,
     ) -> dict[str, Any]:
         """Builds the creation form modal for the specified object type."""
         blocks = []
@@ -985,10 +1477,22 @@ class ModalBuilder:
             )
 
             if pipelines:
-                # Assuming Ticket pipeline is passed similarly, or uses default
-                # For simplicity, fallback to inputs if no pipeline structure
-                # passed specifically for tickets
-                pass
+                pipeline_options = [(p["label"], p["id"]) for p in pipelines]
+                blocks.append(self._select("Pipeline", "hs_pipeline", pipeline_options))
+
+                stages = pipelines[0].get("stages", [])
+                stage_options = [(s["label"], s["id"]) for s in stages]
+                if stage_options:
+                    blocks.append(
+                        self._select(
+                            "Ticket Status", "hs_pipeline_stage", stage_options
+                        )
+                    )
+            else:
+                blocks.append(self._input("Pipeline ID", "hs_pipeline", optional=True))
+                blocks.append(
+                    self._input("Ticket Status ID", "hs_pipeline_stage", optional=True)
+                )
 
             blocks.append(
                 self._select(
@@ -1010,11 +1514,11 @@ class ModalBuilder:
             )
             blocks.append(self._input("Name", "name"))
             blocks.append(self._input("City", "city", optional=True))
-            blocks.append(self._input("Industry", "industry", optional=True))
 
         return {
             "type": "modal",
             "callback_id": f"{callback_id}:{object_type}",
+            "private_metadata": metadata or "",
             "title": {"type": "plain_text", "text": title_text},
             "blocks": blocks,
             "submit": {"type": "plain_text", "text": "Create"},

@@ -25,12 +25,9 @@ async def hubspot_oauth_callback(
     corr_id: str = Depends(get_corr_id),
     integration_service: IntegrationService = Depends(get_integration_service),
 ) -> Any:
-    """HubSpot OAuth callback."""
     log = CorrelationAdapter(logger, corr_id)
-
     log.info("Received HubSpot OAuth callback code=%s state=%s", code, state)
 
-    # Optional: handle HubSpot OAuth errors
     error = request.query_params.get("error")
     if error:
         log.warning("HubSpot OAuth error=%s", error)
@@ -39,14 +36,11 @@ async def hubspot_oauth_callback(
         )
 
     try:
-        # integration_service injected via Depends()
-
         workspace_id = await integration_service.handle_hubspot_oauth_callback(
             code=code,
             state=state,
         )
 
-        # Bridge to Slack if missing
         slack_integration = await integration_service.get_integration(
             workspace_id, Provider.SLACK
         )
@@ -65,7 +59,6 @@ async def hubspot_oauth_callback(
 
     except HTTPException:
         raise
-
     except Exception as exc:
         log.error("HubSpot OAuth callback failed: %s", exc)
         raise HTTPException(

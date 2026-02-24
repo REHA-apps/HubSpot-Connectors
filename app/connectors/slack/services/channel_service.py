@@ -11,14 +11,12 @@ from app.core.config import settings
 from app.core.exceptions import IntegrationNotFoundError
 from app.core.logging import get_logger
 from app.core.models.channel import OutboundMessage
-from app.db.records import Provider
 from app.domains.ai.service import AIService
 from app.domains.crm.base import BaseChannelService
 from app.domains.crm.service import CRMService
-from app.providers.slack.client import SlackClient
 from app.utils.helpers import normalize_object_type
 
-logger = get_logger("channel.service")
+logger = get_logger("slack.channel.service")
 
 # Compiled Regex Patterns
 TICKET_PATTERN = re.compile(r"Ticket #(\d+)")
@@ -59,39 +57,25 @@ class ChannelService(BaseChannelService):
                 "Slack integration not configured for this workspace"
             )
 
-        workspace_id = self.slack_integration.workspace_id
-        token = self.slack_integration.slack_bot_token
-        refresh_token = self.slack_integration.refresh_token
-        expires_at = self.slack_integration.expires_at
-
-        client = SlackClient(
-            corr_id=self.corr_id,
-            bot_token=token,
-            refresh_token=refresh_token,
-            expires_at=expires_at,
-        )
-
-        # Set callback for token rotation
-        client.on_token_refresh = lambda t, r, e: (
-            self.integration_service.update_slack_tokens(
-                workspace_id=workspace_id,
-                access_token=t,
-                refresh_token=r,
-                expires_at=e,
-            )
-        )
+        client = await self.integration_service.get_slack_client(self.slack_integration)
 
         return SlackChannel(
-            bot_token=token,
+            bot_token=self.slack_integration.slack_bot_token,
             corr_id=self.corr_id,
+            slack_client=client,
         )
 
     async def _resolve_channel(self, workspace_id: str, channel: str | None) -> str:
         if channel:
             return channel
+
+        # Use the specific channel defined for this integration instance
+        # (Enterprise routing support)
+        if self.slack_integration and self.slack_integration.metadata.get("channel_id"):
+            return str(self.slack_integration.metadata["channel_id"])
+
         return await self.integration_service.resolve_default_channel(
             workspace_id=workspace_id,
-            provider=Provider.SLACK,
         )
 
     # Rich message rendering
@@ -102,35 +86,38 @@ class ChannelService(BaseChannelService):
         obj: Mapping[str, Any],
         channel: str | None = None,
         analysis: Any = None,
-    ) -> None:
-        """Builds and dispatches a rich CRM object card with AI insights to Slack.
-
-        Automatically determines object type for AI analysis if not provided.
-
-        Args:
-            workspace_id (str): Internal workspace identifier.
-            obj (Mapping[str, Any]): The CRM object record from HubSpot.
-            channel (str | None): Optional target channel override.
-            analysis (Any): Optional pre-computed AI analysis.
-
-        """
+        is_pro: bool = False,
+        thread_ts: str | None = None,
+        response_url: str | None = None,
+    ) -> str | None:
+        """Builds and dispatches a rich CRM object card with AI insights to Slack."""
         # 1. AI analysis (if not provided)
         if analysis is None:
             obj_type = str(obj.get("type") or "contact")
             analysis = await self.ai.analyze_polymorphic(obj, obj_type)
 
         # 2. Build Unified IR
-        unified_card = self.cards.build(obj, analysis)
+        unified_card = self.cards.build(obj, analysis, is_pro=is_pro)
 
         # 3. Render for Slack
         rendered = self.slack_renderer.render(unified_card)
 
         # 4. Send Slack message
-        await self.send_message(
+        if response_url:
+            await self.send_via_response_url(
+                response_url=response_url,
+                blocks=rendered["blocks"],
+                text=unified_card.title or "CRM Object Detail",
+            )
+            return None
+
+        resp = await self.send_message(
             workspace_id=workspace_id,
             channel=channel,
             blocks=rendered["blocks"],
+            thread_ts=thread_ts,
         )
+        return str(resp.get("ts")) if resp and resp.get("ts") else None
 
     # Core messaging
     async def send_message(
@@ -141,19 +128,9 @@ class ChannelService(BaseChannelService):
         blocks: list[dict[str, Any]] | None = None,
         text: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-    ) -> None:
-        """Dispatches a generic message or Block Kit payload to Slack.
-
-        Args:
-            workspace_id (str): Internal workspace identifier.
-            channel (str | None): Target channel ID or name.
-            blocks (list[dict[str, Any]] | None): Optional Slack Block Kit payload.
-            text (str | None): Optional fallback text.
-
-        Returns:
-            None
-
-        """
+        thread_ts: str | None = None,
+    ) -> Mapping[str, Any] | None:
+        """Dispatches a generic message or Block Kit payload to Slack."""
         channel_inst = await self._get_slack_channel()
         try:
             channel = await self._resolve_channel(workspace_id, channel)
@@ -167,10 +144,30 @@ class ChannelService(BaseChannelService):
             workspace_id=workspace_id,
             destination=channel,
             text=text,
-            provider_metadata={"blocks": blocks},
+            provider_metadata={"blocks": blocks, "thread_ts": thread_ts},
         )
 
-        await channel_inst.send_message(message)
+        return await channel_inst.send_message(message)
+
+    async def send_via_response_url(
+        self,
+        response_url: str,
+        text: str,
+        blocks: list[dict[str, Any]] | None = None,
+        replace_original: bool = False,
+    ) -> bool:
+        """Sends a response to a Slack slash command or interaction using the
+        response_url.
+
+        # noqa: E501
+        """
+        channel = await self._get_slack_channel()
+        return await channel.send_via_response_url(
+            response_url=response_url,
+            text=text,
+            blocks=blocks,
+            replace_original=replace_original,
+        )
 
     # Specialized AI rendering
     async def send_slack_ai_insights(self, *, workspace_id, channel, analysis):
@@ -192,9 +189,7 @@ class ChannelService(BaseChannelService):
         )
 
     async def send_welcome_message(self, workspace_id: str, channel: str) -> None:
-        """Description:
-        Sends a welcome message to Slack with a button to connect HubSpot.
-        """
+        """Sends a welcome message to Slack with a button to connect HubSpot."""
         blocks = [
             {
                 "type": "section",
@@ -241,23 +236,9 @@ class ChannelService(BaseChannelService):
         corr_id: str,
         user_id: str = "",
     ) -> None:
-        """Coordinates HubSpot search and sends the best possible Slack result.
+        """Coordinates HubSpot search and sends the best possible Slack result."""
+        slack_channel = await self._get_slack_channel()
 
-        (e.g., card, summary, or error).
-
-        Args:
-            workspace_id (str): Internal workspace identifier.
-            query (str): The search query.
-            channel (str): Target Slack channel.
-            response_url (str): Slack response URL for deferred responses.
-            object_type (str): CRM object type.
-            corr_id (str): Correlation ID for tracing.
-            user_id (str): Slack user ID who triggered the search.
-
-        Returns:
-            None
-
-        """
         # Build a context header showing who triggered the search
         context_blocks: list[dict[str, Any]] = []
         if user_id:
@@ -282,9 +263,8 @@ class ChannelService(BaseChannelService):
         )
 
         if not results:
-            await self.send_message(
-                workspace_id=workspace_id,
-                channel=channel,
+            await slack_channel.send_via_response_url(
+                response_url=response_url,
                 blocks=context_blocks,
                 text=f"No {object_type} found for *{query}*.",
             )
@@ -295,12 +275,12 @@ class ChannelService(BaseChannelService):
             logger.info(
                 "Multiple results found (%d), sending summary list", len(results)
             )
-            summary_card = self.cards.build_search_results(results[:5])  # Limit to 5
+            summary_card = self.cards.build_search_results(results[:5])
             rendered = self.slack_renderer.render(summary_card)
-            await self.send_message(
-                workspace_id=workspace_id,
-                channel=channel,
+            await slack_channel.send_via_response_url(
+                response_url=response_url,
                 blocks=context_blocks + rendered["blocks"],
+                text=f"Found multiple {object_type}s.",
             )
             return
 
@@ -315,7 +295,7 @@ class ChannelService(BaseChannelService):
 
         analysis = await self.ai.analyze_polymorphic(obj, obj_type)
 
-        # Fetch pipelines if it's a deal (for stage dropdown)
+        # Fetch pipelines if it's a deal
         pipelines = None
         if obj_type == "deal":
             pipelines = await self.crm.hubspot.get_deal_pipelines(workspace_id)
@@ -326,15 +306,16 @@ class ChannelService(BaseChannelService):
             task_context = await self.crm.hubspot.enrich_task(workspace_id, obj)
 
         # 4. Build Unified IR
+        is_pro = await self.integration_service.is_pro_workspace(workspace_id)
         unified_card = self.cards.build(
-            obj, analysis, pipelines=pipelines, task_context=task_context
+            obj, analysis, pipelines=pipelines, task_context=task_context, is_pro=is_pro
         )
         rendered = self.slack_renderer.render(unified_card)
 
-        await self.send_message(
-            workspace_id=workspace_id,
-            channel=channel,
+        await slack_channel.send_via_response_url(
+            response_url=response_url,
             blocks=context_blocks + rendered["blocks"],
+            text=f"Found {object_type}: {obj.get('id')}",
         )
 
     async def handle_link_shared(
@@ -345,11 +326,8 @@ class ChannelService(BaseChannelService):
         ts: str,
         links: list[dict[str, str]],
     ) -> None:
-        """Description:
-        Handles Slack link_shared event by unfurling HubSpot URLs.
-        """
+        """Handles Slack link_shared event by unfurling HubSpot URLs."""
         try:
-            # HubSpot URL pattern: https://app.hubspot.com/contacts/PORTAL_ID/contact/CONTACT_ID/
             pattern = re.compile(
                 r"https://app\.hubspot\.com/contacts/\d+/(contact|deal|company)/(\d+)/?"
             )
@@ -376,7 +354,8 @@ class ChannelService(BaseChannelService):
                 analysis = await self.ai.analyze_polymorphic(obj, obj_type)
 
                 # 3. Build Card Blocks
-                unified_card = self.cards.build(obj, analysis)
+                is_pro = await self.integration_service.is_pro_workspace(workspace_id)
+                unified_card = self.cards.build(obj, analysis, is_pro=is_pro)
                 rendered = self.slack_renderer.render(unified_card)
 
                 # 4. Add to unfurls
@@ -384,8 +363,8 @@ class ChannelService(BaseChannelService):
 
             if unfurls:
                 # 5. Call chat.unfurl
-                slack_channel = self.integration_service.slack_channel
-                await slack_channel.chat_unfurl(
+                slack_channel_inst = await self._get_slack_channel()
+                await slack_channel_inst.chat_unfurl(
                     channel=channel,
                     ts=ts,
                     unfurls=unfurls,
@@ -407,10 +386,7 @@ class ChannelService(BaseChannelService):
         text: str,
         user: str,
     ) -> None:
-        """Description:
-        Handles a reply in a threaded conversation.
-        If the thread is associated with a CRM object (Ticket), syncs the reply.
-        """
+        """Handles a reply in a threaded conversation."""
         try:
             slack_channel = await self._get_slack_channel()
             client = slack_channel.get_slack_client()
@@ -428,23 +404,34 @@ class ChannelService(BaseChannelService):
 
             parent = messages[0]
             parent_text = parent.get("text", "")
-
             blocks = parent.get("blocks", [])
             full_context = f"{parent_text} {str(blocks)}"
 
-            # 2. Heuristic: Look for Ticket or Conversation Context
-            ticket_match = TICKET_PATTERN.search(full_context)
-            if not ticket_match:
-                ticket_match = TICKET_ID_PATTERN.search(full_context)
+            # 2. Look up thread mapping
+            ticket_id = None
+            mapping = await self.integration_service.storage.get_thread_mapping_by_ts(
+                workspace_id=workspace_id,
+                channel_id=channel,
+                thread_ts=thread_ts,
+            )
+
+            if mapping and mapping.object_type == "ticket":
+                ticket_id = mapping.object_id
+                logger.info("Resolved ticket ID from thread mapping: %s", ticket_id)
+
+            # Heuristic Fallback
+            if not ticket_id:
+                ticket_match = TICKET_PATTERN.search(full_context)
+                if not ticket_match:
+                    ticket_match = TICKET_ID_PATTERN.search(full_context)
+                if ticket_match:
+                    ticket_id = ticket_match.group(1)
 
             conversation_match = CONVERSATION_PATTERN.search(full_context)
 
-            if ticket_match:
-                ticket_id = ticket_match.group(1)
-
+            if ticket_id:
                 # 3. Create Note for Ticket
                 note_content = f"Slack Reply from <@{user}>:\n{text}"
-
                 await self.crm.hubspot.create_note(
                     workspace_id=workspace_id,
                     content=note_content,
@@ -455,7 +442,6 @@ class ChannelService(BaseChannelService):
 
             elif conversation_match:
                 thread_id = conversation_match.group(1)
-
                 # 3. Send Message to Conversation
                 await self.crm.hubspot.send_thread_reply(
                     workspace_id=workspace_id,
@@ -463,9 +449,7 @@ class ChannelService(BaseChannelService):
                     text=text,
                 )
                 logger.info("Synced threaded reply to Conversation %s", thread_id)
-
             else:
-                # Not a CRM thread
                 return
 
             # 4. React to the reply to confirm sync
@@ -475,3 +459,103 @@ class ChannelService(BaseChannelService):
 
         except Exception as exc:
             logger.error("Failed to handle threaded reply: %s", exc, exc_info=True)
+
+    async def handle_reaction_logging(
+        self,
+        *,
+        workspace_id: str,
+        channel: str,
+        message_ts: str,
+        reaction: str,
+        user: str,
+    ) -> None:
+        """Handles a Slack reaction (📝) by logging the message content to HubSpot."""
+        try:
+            # 1. Tier Check
+            is_pro = await self.integration_service.is_pro_workspace(workspace_id)
+            if not is_pro:
+                logger.info(
+                    "Skipping reaction sync: Workspace %s is not PRO", workspace_id
+                )
+                return
+
+            slack_channel = await self._get_slack_channel()
+            client = slack_channel.get_slack_client()
+
+            # 2. Fetch the specific message
+            resp = await client.reactions_get(channel=channel, timestamp=message_ts)
+            msg_data = resp.get("message", {})
+            text = msg_data.get("text", "")
+            thread_ts = msg_data.get("thread_ts") or message_ts
+
+            if not text:
+                logger.warning("Empty message for reaction sync in channel=%s", channel)
+                return
+
+            # 3. Resolve HubSpot Record
+            mapping = await self.integration_service.storage.get_thread_mapping_by_ts(
+                workspace_id=workspace_id,
+                channel_id=channel,
+                thread_ts=thread_ts,
+            )
+
+            object_id = None
+            object_type = None
+
+            if mapping:
+                object_id = mapping.object_id
+                object_type = mapping.object_type
+            else:
+                full_context = text + str(msg_data.get("blocks", []))
+                ticket_match = TICKET_PATTERN.search(full_context)
+                if not ticket_match:
+                    ticket_match = TICKET_ID_PATTERN.search(full_context)
+
+                if ticket_match:
+                    object_id = ticket_match.group(1)
+                    object_type = "ticket"
+
+            if not object_id or not object_type:
+                logger.warning(
+                    "Could not resolve HubSpot record for reaction sync in "
+                    "channel=%s message_ts=%s",
+                    channel,
+                    message_ts,
+                )
+                return
+
+            # 4. Create Note in HubSpot
+            note_content = f"Logged from Slack by <@{user}> (📝 reaction):\n{text}"
+            await self.crm.hubspot.create_note(
+                workspace_id=workspace_id,
+                content=note_content,
+                associated_id=object_id,
+                associated_type=object_type,
+            )
+
+            # 5. Confirmation Reaction
+            await client.reactions_add(
+                channel=channel, name="notebook", timestamp=message_ts
+            )
+            logger.info(
+                "Synced message to HubSpot %s:%s via emoji", object_type, object_id
+            )
+
+        except Exception as exc:
+            logger.error("Failed to handle reaction logging: %s", exc, exc_info=True)
+
+    async def handle_app_home_opened(self, user_id: str) -> None:
+        """Publishes the static Home tab view when a user opens the App Home."""
+        try:
+            slack_channel = await self._get_slack_channel()
+            client = slack_channel.get_slack_client()
+
+            logger.info("Publishing App Home view for user=%s", user_id)
+            view_payload = self.cards.build_app_home_view()
+
+            await client.views_publish(user_id=user_id, view=view_payload)
+            logger.info("Successfully published App Home for user=%s", user_id)
+        except Exception as exc:
+            logger.error(
+                "Failed to publish App Home view for user=%s: %s", user_id, exc
+            )

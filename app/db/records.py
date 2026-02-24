@@ -14,6 +14,11 @@ class Provider(StrEnum):
     GMAIL = "gmail"
 
 
+class PlanTier(StrEnum):
+    FREE = "free"
+    PRO = "pro"
+
+
 class WorkspaceRecord(BaseRecord):
     """Description:
         Persistence model representing a workspace (e.g., a company or Slack team).
@@ -27,6 +32,9 @@ class WorkspaceRecord(BaseRecord):
     id: str
     primary_email: str | None = None
     subscription_id: str | None = None
+    subscription_status: str | None = "inactive"  # 'active', 'inactive', 'trialing'
+    tier: PlanTier = PlanTier.FREE
+    install_date: datetime | None = None
 
     # Optional metadata
     created_at: datetime | None = None
@@ -92,3 +100,23 @@ class IntegrationRecord(BaseRecord):
     @property
     def channel_id(self) -> str | None:
         return self.metadata.get("channel_id")
+
+
+class ThreadMappingRecord(BaseRecord):
+    """Description:
+    Maps a CRM object to its corresponding Slack thread.
+    """
+
+    required_fields: ClassVar[set[str]] = {
+        "workspace_id",
+        "object_type",
+        "object_id",
+        "channel_id",
+        "thread_ts",
+    }
+
+    workspace_id: str
+    object_type: str
+    object_id: str
+    channel_id: str
+    thread_ts: str

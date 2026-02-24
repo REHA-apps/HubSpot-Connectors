@@ -5,10 +5,10 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
+from app.connectors.slack.services.command_service import CommandService
 from app.core.dependencies import get_integration_service
 from app.core.logging import CorrelationAdapter, get_corr_id, get_logger
 from app.core.security.slack_signature import verify_slack_signature
-from app.domains.crm.command_service import CommandService
 from app.domains.crm.integration_service import IntegrationService
 from app.utils.constants import ErrorCode
 

@@ -58,7 +58,7 @@ class SlackClient:
 
         # We need a channel instance to do the exchange
         # Note: app.channels will eventually become app.connectors
-        from app.connectors.slack.channel import SlackChannel
+        from app.connectors.slack.channel import SlackChannel  # noqa: PLC0415
 
         platform = SlackChannel(corr_id=self.corr_id)
 
@@ -104,6 +104,13 @@ class SlackClient:
 
     async def chat_postMessage(self, **kwargs) -> Any:
         await self._ensure_fresh_token()
+        channel = kwargs.get("channel")
+        token_prefix = self.bot_token[:15] if self.bot_token else "None"
+        self.log.info(
+            "Attempting Slack chat.postMessage channel=%s token_prefix=%s",
+            channel,
+            token_prefix,
+        )
         return await self._client.chat_postMessage(**kwargs)
 
     async def users_info(self, **kwargs) -> Any:

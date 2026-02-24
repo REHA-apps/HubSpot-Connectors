@@ -9,7 +9,7 @@ from app.core.models.channel import OutboundMessage
 
 @pytest.mark.asyncio
 async def test_slack_connector_send_message(corr_id):
-    with patch("app.connectors.slack.channel.AsyncWebClient") as MockClient:
+    with patch("app.providers.slack.client.AsyncWebClient") as MockClient:
         mock_instance = MockClient.return_value
         mock_instance.chat_postMessage = AsyncMock(
             return_value=MagicMock(data={"ok": True})

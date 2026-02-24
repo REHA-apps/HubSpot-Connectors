@@ -11,6 +11,7 @@ router = APIRouter(prefix="/hubspot", tags=["hubspot-install"])
 
 @router.get("/install")
 async def hubspot_install(state: str | None = None):
+    # Logic to redirect to HubSpot OAuth
     state = state or secrets.token_urlsafe(32)
     oauth_url = (
         "https://app.hubspot.com/oauth/authorize"

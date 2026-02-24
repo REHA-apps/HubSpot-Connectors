@@ -12,7 +12,7 @@ R = TypeVar("R", bound=SupabaseModel)
 logger = get_logger("supabase.repo")
 
 
-class SupabaseRepository(Generic[R]):
+class SupabaseRepository(Generic[R]):  # noqa: UP046
     """Description:
         Generic asynchronous repository for typed CRUD operations on Supabase tables.
 

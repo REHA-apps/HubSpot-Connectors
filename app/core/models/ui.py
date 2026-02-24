@@ -24,6 +24,7 @@ class UnifiedCard(BaseModel):
     title: str
     subtitle: str | None = None
     emoji: str | None = None
+    badge: str | None = None  # e.g., "Free Version"
 
     # Key metrics (e.g., Score, Amount, Status)
     metrics: list[tuple[str, str]] = []
@@ -36,3 +37,17 @@ class UnifiedCard(BaseModel):
 
     actions: list[CardAction] = []
     footer: str | None = "Powered by REHA"
+
+
+class ModalMetadata(BaseModel):
+    """Description:
+    Typed metadata for Slack modals to ensure robust parsing.
+    """
+
+    object_type: str | None = None
+    object_id: str | None = None
+    deal_id: str | None = None
+    stage_id: str | None = None
+    channel_id: str | None = None
+    response_url: str | None = None
+    metadata_type: str | None = None  # e.g., "post_mortem", "next_step"

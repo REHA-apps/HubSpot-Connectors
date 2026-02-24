@@ -6,11 +6,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
+from app.connectors.slack.services.channel_service import ChannelService
 from app.core.dependencies import get_integration_service
 from app.core.logging import CorrelationAdapter, get_corr_id, get_logger
 from app.core.security.state_validator import verify_state
 from app.db.records import Provider
-from app.domains.crm.channel_service import ChannelService
 from app.domains.crm.integration_service import IntegrationService
 from app.utils.constants import ErrorCode
 from app.utils.ui import render_success_page

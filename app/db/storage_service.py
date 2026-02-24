@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.logging import CorrelationAdapter, get_logger
-from app.db.records import IntegrationRecord, Provider, WorkspaceRecord
+from app.db.records import (
+    IntegrationRecord,
+    Provider,
+    ThreadMappingRecord,
+    WorkspaceRecord,
+)
 from app.db.repository import SupabaseRepository
 from app.db.supabase_client import SupabaseClient
 from app.utils.cache import AsyncTTL
@@ -38,6 +43,13 @@ class StorageService:
             corr_id=corr_id,
         )
 
+        self.thread_mappings = SupabaseRepository[ThreadMappingRecord](
+            client=self.client,
+            table="thread_mappings",
+            model=ThreadMappingRecord,
+            corr_id=corr_id,
+        )
+
     # Workspace operations
     async def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None:
         self.log.info("Fetching workspace workspace_id=%s", workspace_id)
@@ -48,12 +60,15 @@ class StorageService:
         workspace_id: str,
         primary_email: str | None = None,
         subscription_id: str | None = None,
+        install_date: Any | None = None,
     ) -> WorkspaceRecord:
         payload = {
             "id": workspace_id,
             "primary_email": primary_email,
             "subscription_id": subscription_id,
         }
+        if install_date:
+            payload["install_date"] = install_date
 
         self.log.info("Upserting workspace id=%s", workspace_id)
         return await self.workspaces.upsert(payload)
@@ -76,6 +91,10 @@ class StorageService:
         self.log.info("Deleting workspace workspace_id=%s", workspace_id)
         return await self.workspaces.delete({"id": workspace_id})
 
+    async def list_all_workspaces(self) -> list[WorkspaceRecord]:
+        self.log.info("Listing all workspaces")
+        return await self.workspaces.fetch_many({})
+
     # Integration operations
     async def get_integration(
         self, workspace_id: str, provider: Provider
@@ -94,6 +113,18 @@ class StorageService:
             )
 
         return await _record_cache.get_or_fetch(cache_key, fetch)
+
+    async def list_integrations(
+        self,
+        workspace_id: str,
+        provider: Provider | None = None,
+    ) -> list[IntegrationRecord]:
+        """Fetches all integrations for a workspace, optionally filtered by provider."""
+        filters: dict[str, Any] = {"workspace_id": workspace_id}
+        if provider:
+            filters["provider"] = provider
+
+        return await self.integrations.fetch_many(filters)
 
     async def get_integration_by_slack_team_id(
         self,
@@ -150,7 +181,8 @@ class StorageService:
         record = await fetch_record_directly()
         if record:
             await _hubspot_mapping_cache.get_or_fetch(
-                portal_id, lambda: _wrap_result(record.workspace_id)
+                portal_id,
+                lambda: _wrap_result(record.workspace_id),  # noqa: PLW0108
             )
 
         return record
@@ -163,7 +195,7 @@ class StorageService:
         # We don't cache list queries comfortably yet due to invalidation complexity
         return await self.integrations.fetch_many({"workspace_id": workspace_id})
 
-    async def list_integrations(self) -> list[IntegrationRecord]:
+    async def list_all_integrations(self) -> list[IntegrationRecord]:
         self.log.info("Listing all integrations")
         return await self.integrations.fetch_many({})
 
@@ -270,6 +302,59 @@ class StorageService:
             await _record_cache.invalidate(f"integ:{workspace_id}:{provider}")
 
         return updated
+
+    # Thread mapping operations
+    async def get_thread_mapping(
+        self,
+        workspace_id: str,
+        object_type: str,
+        object_id: str,
+        channel_id: str,
+    ) -> ThreadMappingRecord | None:
+        self.log.info(
+            "Fetching thread mapping workspace_id=%s object_type=%s object_id=%s",
+            workspace_id,
+            object_type,
+            object_id,
+        )
+        return await self.thread_mappings.fetch_single(
+            {
+                "workspace_id": workspace_id,
+                "object_type": object_type,
+                "object_id": object_id,
+                "channel_id": channel_id,
+            }
+        )
+
+    async def upsert_thread_mapping(
+        self, payload: dict[str, Any]
+    ) -> ThreadMappingRecord:
+        self.log.info(
+            "Upserting thread mapping object_id=%s thread_ts=%s",
+            payload.get("object_id"),
+            payload.get("thread_ts"),
+        )
+        return await self.thread_mappings.upsert(payload)
+
+    async def get_thread_mapping_by_ts(
+        self,
+        workspace_id: str,
+        channel_id: str,
+        thread_ts: str,
+    ) -> ThreadMappingRecord | None:
+        self.log.info(
+            "Fetching thread mapping workspace_id=%s channel_id=%s thread_ts=%s",
+            workspace_id,
+            channel_id,
+            thread_ts,
+        )
+        return await self.thread_mappings.fetch_single(
+            {
+                "workspace_id": workspace_id,
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+            }
+        )
 
 
 # Global module-level caches

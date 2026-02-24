@@ -6,7 +6,7 @@ from typing import Any, Generic, TypeVar
 T = TypeVar("T")
 
 
-class AsyncTTL(Generic[T]):
+class AsyncTTL(Generic[T]):  # noqa: UP046
     """Description:
         A simple asynchronous in-memory LRU-like cache with Time-To-Live (TTL).
 

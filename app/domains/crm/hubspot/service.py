@@ -76,8 +76,8 @@ class HubSpotService(BaseCRMService):
                 "Reactive uninstallation triggered for workspace_id=%s", workspace_id
             )
             # Avoid circular import
-            from app.domains.crm.integration_service import (
-                IntegrationService,  # noqa: PLC0415
+            from app.domains.crm.integration_service import (  # noqa: PLC0415
+                IntegrationService,
             )
 
             service = IntegrationService(self.corr_id, storage=self.storage)
@@ -110,9 +110,19 @@ class HubSpotService(BaseCRMService):
         workspace_id: str,
         object_type: str,
         query: str,
-    ):
+    ) -> list[dict[str, Any]]:
         """Unified HubSpot search entry point.
+
         Delegates to the correct search_* method based on object_type.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_type: The CRM object type (e.g., 'contact', 'deal').
+            query: The search query string.
+
+        Returns:
+            A list of matching HubSpot objects.
+
         """
         object_type = object_type.lower()
 
@@ -132,35 +142,46 @@ class HubSpotService(BaseCRMService):
             case "tasks" | "task":
                 results = await self.search_tasks(workspace_id, query)
                 url_segment = "task"
+
             case _:
                 self.log.error("Unknown HubSpot object_type=%s", object_type)
                 return []
 
-        # 2. Inject deep links
+        return await self.inject_urls(workspace_id, results, url_segment)
+
+    async def inject_urls(
+        self,
+        workspace_id: str,
+        results: list[dict[str, Any]],
+        object_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Injects `hs_url` deep links and standardizes `type` on a list of results."""
+        if not results:
+            return results
+
         integration = await self.storage.get_integration(workspace_id, Provider.HUBSPOT)
         portal_id = integration.portal_id if integration else None
 
-        if results:
-            for r in results:
-                object_id = r.get("id")
-                r["type"] = normalize_object_type(object_type)  # contacts -> contact
+        for r in results:
+            obj_type = normalize_object_type(
+                object_type.lower() if object_type else (r.get("type", "contact"))
+            )
+            r["type"] = obj_type
+            object_id = r.get("id")
 
-                if portal_id:
-                    # Tasks and tickets use different URL patterns than
-                    # contacts/deals/companies
-                    if url_segment == "task":
-                        r["hs_url"] = (
-                            f"https://app.hubspot.com/tasks/{portal_id}/view/all?taskId={object_id}"
-                        )
-                    elif url_segment == "ticket":
-                        r["hs_url"] = (
-                            f"https://app.hubspot.com/contacts/{portal_id}/ticket/{object_id}"
-                        )
-                    else:
-                        r["hs_url"] = (
-                            f"https://app.hubspot.com/contacts/{portal_id}/"
-                            f"{url_segment}/{object_id}"
-                        )
+            if portal_id and object_id and not r.get("hs_url"):
+                if obj_type == "task":
+                    r["hs_url"] = (
+                        f"https://app.hubspot.com/tasks/{portal_id}/view/all?taskId={object_id}"
+                    )
+                elif obj_type == "ticket":
+                    r["hs_url"] = (
+                        f"https://app.hubspot.com/contacts/{portal_id}/ticket/{object_id}"
+                    )
+                else:
+                    r["hs_url"] = (
+                        f"https://app.hubspot.com/contacts/{portal_id}/{obj_type}/{object_id}"
+                    )
 
         return results
 
@@ -216,19 +237,31 @@ class HubSpotService(BaseCRMService):
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
         client = await self.get_client(workspace_id=workspace_id)
-        return await client.get_contact(object_id)
+        result = await client.get_contact(object_id)
+        if result:
+            results = await self.inject_urls(workspace_id, [result], "contact")
+            return results[0]
+        return None
 
     async def get_deal(
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
         client = await self.get_client(workspace_id=workspace_id)
-        return await client.get_deal(object_id)
+        result = await client.get_deal(object_id)
+        if result:
+            results = await self.inject_urls(workspace_id, [result], "deal")
+            return results[0]
+        return None
 
     async def get_company(
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
         client = await self.get_client(workspace_id=workspace_id)
-        return await client.get_company(object_id)
+        result = await client.get_company(object_id)
+        if result:
+            results = await self.inject_urls(workspace_id, [result], "company")
+            return results[0]
+        return None
 
     async def get_object(
         self,
@@ -236,8 +269,18 @@ class HubSpotService(BaseCRMService):
         workspace_id: str,
         object_type: str,
         object_id: str,
-    ) -> Mapping[str, Any] | None:
-        """Unified entry point to fetch any CRM object."""
+    ) -> dict[str, Any] | None:
+        """Unified entry point to fetch any CRM object.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_type: The HubSpot object type.
+            object_id: The specific record ID.
+
+        Returns:
+            The object data or None if not found.
+
+        """
         object_type = normalize_object_type(object_type)
 
         result = None
@@ -250,6 +293,7 @@ class HubSpotService(BaseCRMService):
                 result = await self.get_company(workspace_id, object_id)
             case "ticket":
                 result = await self.get_ticket(workspace_id, object_id)
+
             case "task":
                 result = await self.get_task(workspace_id, object_id)
             case "conversation" | "thread":
@@ -352,7 +396,7 @@ class HubSpotService(BaseCRMService):
         for deal in deals:
             deal["type"] = "deal"
 
-        return deals
+        return await self.inject_urls(workspace_id, deals, "deal")
 
     async def get_company_contacts(
         self,
@@ -375,7 +419,7 @@ class HubSpotService(BaseCRMService):
         for contact in contacts:
             contact["type"] = "contact"
 
-        return contacts
+        return await self.inject_urls(workspace_id, contacts, "contact")
 
     async def get_contact_deals(
         self,
@@ -397,7 +441,7 @@ class HubSpotService(BaseCRMService):
         for deal in deals:
             deal["type"] = "deal"
 
-        return deals
+        return await self.inject_urls(workspace_id, deals, "deal")
 
     async def get_contact_companies(
         self,
@@ -425,7 +469,7 @@ class HubSpotService(BaseCRMService):
         for co in companies:
             co["type"] = "company"
 
-        return companies
+        return await self.inject_urls(workspace_id, companies, "company")
 
     async def get_deal_pipelines(self, workspace_id: str) -> list[dict[str, Any]]:
         """Fetch deal pipelines with global TTL caching.
@@ -451,19 +495,29 @@ class HubSpotService(BaseCRMService):
         deal_id: str,
         properties: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Update a deal's properties.
-
-        Args:
-            workspace_id (str): The workspace identifier.
-            deal_id (str): The HubSpot deal ID.
-            properties (Mapping[str, Any]): Dictionary of properties to update.
-
-        Returns:
-            dict[str, Any]: The updated deal object.
-
-        """
+        """Update a deal's properties."""
         client = await self.get_client(workspace_id)
         return await client.update_deal(deal_id, properties)
+
+    async def update_contact(
+        self,
+        workspace_id: str,
+        contact_id: str,
+        properties: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Update a contact's properties."""
+        client = await self.get_client(workspace_id)
+        return await client.update_contact(contact_id, properties)
+
+    async def update_company(
+        self,
+        workspace_id: str,
+        company_id: str,
+        properties: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Update a company's properties."""
+        client = await self.get_client(workspace_id)
+        return await client.update_company(company_id, properties)
 
     async def get_owners(self, workspace_id: str) -> list[dict[str, Any]]:
         """Fetch owners with global TTL caching.
@@ -592,15 +646,15 @@ class HubSpotService(BaseCRMService):
 
         associations = None
         if contact_id:
-            # Association Type ID for Meeting -> Contact is usually 202
-            # (same as Note -> Contact)
+            # Association Type ID for Meeting -> Contact is 200
+            # (Note -> Contact is 202)
             associations = [
                 {
                     "to": {"id": contact_id},
                     "types": [
                         {
                             "associationCategory": "HUBSPOT_DEFINED",
-                            "associationTypeId": 202,
+                            "associationTypeId": 200,
                         }
                     ],
                 }

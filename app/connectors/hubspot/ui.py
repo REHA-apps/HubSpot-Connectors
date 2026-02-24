@@ -35,7 +35,23 @@ class HubSpotRenderer:
         # Add a combined "Summary" property for HubSpot's limited UI
         properties.append({"label": "AI Insights", "value": "\n".join(summary_parts)})
 
+        # 4. Badge Handling
+        if card.badge:
+            properties.insert(0, {"label": "Plan", "value": card.badge})
+
         actions = []
+        # 5. Upgrade Action
+        if card.badge == "Free Version":
+            actions.append(
+                {
+                    "type": "IFRAME",
+                    "width": 890,
+                    "height": 748,
+                    "uri": "https://app.crm-connectors.com/upgrade",
+                    "label": "🚀 Upgrade to Pro",
+                }
+            )
+
         for action in card.actions:
             if action.action_type == "url":
                 actions.append(

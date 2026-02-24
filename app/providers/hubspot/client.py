@@ -454,7 +454,7 @@ class HubSpotClient(BaseClient):
         return await self.get_object(
             "deals",
             object_id,
-            properties=["dealname", "amount", "pipeline", "dealstage"],
+            properties=["dealname", "amount", "pipeline", "dealstage", "hs_next_step"],
         )
 
     async def get_company(self, object_id: str) -> dict[str, Any] | None:
@@ -538,6 +538,22 @@ class HubSpotClient(BaseClient):
             "PATCH", f"objects/deals/{object_id}", json={"properties": properties}
         )
 
+    async def update_contact(
+        self, object_id: str, properties: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Update properties of a contact."""
+        return await self.request(
+            "PATCH", f"objects/contacts/{object_id}", json={"properties": properties}
+        )
+
+    async def update_company(
+        self, object_id: str, properties: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Update properties of a company."""
+        return await self.request(
+            "PATCH", f"objects/companies/{object_id}", json={"properties": properties}
+        )
+
     # Ticket search logic
     async def search_tickets(self, query: str) -> list[dict[str, Any]]:
         return await self.search_objects(
@@ -549,18 +565,6 @@ class HubSpotClient(BaseClient):
         return await self.search_objects(
             "tasks", query_string=query, properties=self._SEARCH_PROPS["tasks"]
         )
-
-    # Knowledge Base search logic
-    async def search_knowledge_articles(self, query: str) -> list[dict[str, Any]]:
-        """Search for Knowledge Base articles using Content Search API."""
-        # Note: This uses v2 API as there's no v3 equivalent for KB search
-        params = {
-            "type": "KNOWLEDGE_ARTICLE",
-            "term": query,
-            "limit": 5,
-        }
-        data = await self.request("GET", "contentsearch/v2/search", params=params)
-        return data.get("results", [])
 
     # Files/Documents search logic
     async def search_files(self, query: str) -> list[dict[str, Any]]:
@@ -665,7 +669,9 @@ class HubSpotClient(BaseClient):
     async def get_account_details(self) -> dict[str, Any]:
         """Fetch account details, including portalId."""
         # Verified endpoint: GET /account-info/v3/details
-        return await self.request("GET", "account-info/v3/details")
+        return await self.request(
+            "GET", "https://api.hubapi.com/account-info/v3/details"
+        )
 
     async def uninstall_app(self) -> None:
         """Description:

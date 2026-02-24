@@ -11,11 +11,11 @@ from fastapi import (
     Response,
 )
 
+from app.connectors.slack.services.channel_service import ChannelService
 from app.core.dependencies import get_integration_service
 from app.core.exceptions import IntegrationNotFoundError
 from app.core.logging import CorrelationAdapter, get_corr_id, get_logger
 from app.core.security.slack_signature import verify_slack_signature
-from app.domains.crm.channel_service import ChannelService
 from app.domains.crm.integration_service import IntegrationService
 from app.utils.constants import ErrorCode
 
@@ -27,7 +27,7 @@ logger = get_logger("slack.events")
     "/events",
     # dependencies=[Depends(verify_slack_signature)],
 )
-async def slack_events(  # noqa: PLR0911, PLR0915
+async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
     request: Request,
     background_tasks: BackgroundTasks,
     corr_id: str = Depends(get_corr_id),
@@ -174,5 +174,68 @@ async def slack_events(  # noqa: PLR0911, PLR0915
                     text=text,
                     user=user,
                 )
+
+    # Handle reaction events for Emoji-based Logging (📝)
+    if event_type == "reaction_added":
+        reaction = event.get("reaction")
+        # Support note or writing_hand (memo) 📝
+        if reaction in ("note", "writing_hand"):
+            item = event.get("item", {})
+            channel = item.get("channel")
+            message_ts = item.get("ts")
+            user = event.get("user")
+
+            if not channel or not message_ts:
+                return {"ok": True}
+
+            log.info(
+                "Processing reaction_added (%s) in channel=%s ts=%s",
+                reaction,
+                channel,
+                message_ts,
+            )
+
+            integration = await integration_service.get_integration_by_slack_team_id(
+                team_id
+            )
+            if integration:
+                channel_service = ChannelService(
+                    corr_id=corr_id,
+                    integration_service=integration_service,
+                    slack_integration=integration,
+                )
+
+                background_tasks.add_task(
+                    channel_service.handle_reaction_logging,
+                    workspace_id=integration.workspace_id,
+                    channel=channel,
+                    message_ts=message_ts,
+                    reaction=reaction,
+                    user=user,
+                )
+
+    # Handle app_home_opened event for the Home tab
+    if event_type == "app_home_opened":
+        user_id = event.get("user")
+        if not user_id:
+            return {"ok": True}
+
+        log.info("Processing app_home_opened for user=%s team_id=%s", user_id, team_id)
+
+        integration = await integration_service.get_integration_by_slack_team_id(
+            team_id
+        )
+        if integration:
+            channel_service = ChannelService(
+                corr_id=corr_id,
+                integration_service=integration_service,
+                slack_integration=integration,
+            )
+
+            # Publishing view to Slack can be slow, handle in background task
+            background_tasks.add_task(
+                channel_service.handle_app_home_opened,
+                user_id=user_id,
+            )
 
     return {"ok": True}

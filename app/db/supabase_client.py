@@ -60,7 +60,7 @@ class SupabaseClient:
             query = query.eq(key, value)
 
         try:
-            resp = await self._run(lambda: query.single().execute())
+            resp = await self._run(query.single().execute)
         except Exception as e:
             # Handle "0 rows" error from .single()
             if hasattr(e, "code") and getattr(e, "code") == "PGRST116":
@@ -111,7 +111,7 @@ class SupabaseClient:
         if limit:
             query = query.limit(limit)
 
-        resp = await self._run(lambda: query.execute())
+        resp = await self._run(query.execute)
         return cast(Sequence[dict[str, Any]], resp.data or [])
 
     async def insert(
@@ -122,7 +122,7 @@ class SupabaseClient:
         self.log.info("Inserting into %s payload=%s", table, payload)
 
         query = self.client.table(table).insert(payload)
-        resp = await self._run(lambda: query.execute())
+        resp = await self._run(query.execute)
 
         # In newer versions, data might be a list or a dict
         data = resp.data
@@ -143,7 +143,7 @@ class SupabaseClient:
         self.log.info("Upserting into %s payload=%s", table, payload)
 
         query = self.client.table(table).upsert(payload, on_conflict=on_conflict)
-        resp = await self._run(lambda: query.execute())
+        resp = await self._run(query.execute)
 
         data = resp.data
         if isinstance(data, list) and len(data) > 0:
@@ -165,7 +165,7 @@ class SupabaseClient:
         for key, value in filters.items():
             update_query = update_query.eq(key, value)
 
-        await self._run(lambda: update_query.execute())
+        await self._run(update_query.execute)
 
         # Fetch updated row
         return await self.fetch_single(table, filters)
@@ -181,7 +181,7 @@ class SupabaseClient:
         for key, value in filters.items():
             query = query.eq(key, value)
 
-        resp = await self._run(lambda: query.execute())
+        resp = await self._run(query.execute)
         return len(resp.data or [])
 
     async def count(
@@ -197,7 +197,7 @@ class SupabaseClient:
         for key, value in filters.items():
             query = query.eq(key, value)
 
-        resp = await self._run(lambda: query.execute())
+        resp = await self._run(query.execute)
 
         data = resp.data or []
         return len(data)

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.domains.crm.channel_service import ChannelService
+from app.connectors.slack.services.channel_service import ChannelService
 
 
 @pytest.mark.asyncio

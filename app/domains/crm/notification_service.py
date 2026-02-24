@@ -3,10 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.logging import CorrelationAdapter, get_logger
-from app.db.records import Provider
+from app.db.records import PlanTier, Provider
 from app.db.storage_service import StorageService
 from app.domains.ai.service import AIService
-from app.domains.crm.channel_service import ChannelService
 from app.domains.crm.hubspot.service import HubSpotService
 from app.domains.crm.integration_service import IntegrationService
 
@@ -45,7 +44,7 @@ class NotificationService:
 
         self.ai = ai or AIService(corr_id)
 
-    async def handle_event(self, event: dict[str, Any]) -> None:
+    async def handle_event(self, event: dict[str, Any]) -> None:  # noqa: PLR0911, PLR0912, PLR0915
         """Process a single HubSpot webhook event."""
         portal_id = str(event.get("portalId"))
         object_id = str(event.get("objectId"))
@@ -97,26 +96,114 @@ class NotificationService:
             )
             return
 
-        # 6. Send Slack Notification
-        slack_integ = await self.storage.get_integration(workspace_id, Provider.SLACK)
+        # 6. Resolve Target Slack Integration (Advanced Routing)
+        is_enterprise = await self.integration_service.is_at_least_tier(
+            workspace_id, PlanTier.PRO
+        )
+
+        slack_integ = None
+        if is_enterprise:
+            # Advanced Routing: Match integration by territory or fallback
+            all_integrations = await self.storage.list_integrations(
+                workspace_id, Provider.SLACK
+            )
+
+            # Heuristic: Match 'hs_territory' against 'routing_key' in metadata
+            territory = obj.get("properties", {}).get("hs_territory")
+            if territory:
+                for integ in all_integrations:
+                    if integ.metadata.get("routing_key") == territory:
+                        slack_integ = integ
+                        self.log.info(
+                            "Routed notification to Slack team_id=%s for territory=%s",
+                            integ.metadata.get("slack_team_id"),
+                            territory,
+                        )
+                        break
+
+            if not slack_integ and all_integrations:
+                # Default to primary or first available
+                slack_integ = all_integrations[0]
+                self.log.info(
+                    "No territory match; defaulted to primary Slack team_id=%s",
+                    slack_integ.metadata.get("slack_team_id"),
+                )
+        else:
+            # Starter/Professional: Single workspace logic
+            slack_integ = await self.storage.get_integration(
+                workspace_id, Provider.SLACK
+            )
+
         if not slack_integ:
             self.log.warning(
-                "No Slack integration for workspace %s, cannot notify", workspace_id
+                "No target Slack integration found for workspace %s, cannot notify",
+                workspace_id,
             )
             return
 
-        channel_service = ChannelService(
+        # Dynamically resolve ChannelService via registry
+        from app.connectors.registry import registry  # noqa: PLC0415
+
+        manifest = registry.get_connector(
+            "slack"
+        )  # This logic could be further abstracted to handle multiple providers
+        if not manifest or not manifest.channel_service:
+            self.log.error("ChannelService for slack not found in registry")
+            return
+
+        channel_service_cls = manifest.channel_service
+        channel_service = channel_service_cls(
             corr_id=self.corr_id,
             integration_service=self.integration_service,
             slack_integration=slack_integ,
         )
 
         self.log.info("Sending proactive notification for %s %s", obj_type, object_id)
-        await channel_service.send_card(
+        is_pro = await self.integration_service.is_pro_workspace(workspace_id)
+
+        thread_ts = None
+        mapping = None
+
+        if is_pro and obj_type == "ticket":
+            # 1. Resolve target channel
+            channel = await channel_service._resolve_channel(workspace_id, None)
+            if channel:
+                # 2. Look up existing thread mapping
+                mapping = await self.storage.get_thread_mapping(
+                    workspace_id=workspace_id,
+                    object_type="ticket",
+                    object_id=object_id,
+                    channel_id=channel,
+                )
+                if mapping:
+                    thread_ts = mapping.thread_ts
+                    self.log.info(
+                        "Found existing thread mapping thread_ts=%s", thread_ts
+                    )
+
+        # 6. Send Slack Notification
+        sent_ts = await channel_service.send_card(
             workspace_id=workspace_id,
             obj=obj,
             analysis=analysis,
+            is_pro=is_pro,
+            thread_ts=thread_ts,
         )
+
+        # 7. Persist new thread mapping if this was the first message
+        if is_pro and obj_type == "ticket" and sent_ts and not thread_ts:
+            channel = await channel_service._resolve_channel(workspace_id, None)
+            if channel:
+                await self.storage.upsert_thread_mapping(
+                    {
+                        "workspace_id": workspace_id,
+                        "object_type": "ticket",
+                        "object_id": object_id,
+                        "channel_id": channel,
+                        "thread_ts": sent_ts,
+                    }
+                )
+                self.log.info("Stored new thread mapping thread_ts=%s", sent_ts)
 
     def _map_subscription_to_type(self, sub_type: str) -> str | None:
         type_map = {

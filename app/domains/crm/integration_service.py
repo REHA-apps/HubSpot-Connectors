@@ -1,16 +1,27 @@
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.connectors.hubspot.channel import HubSpotChannel
 from app.connectors.slack.channel import SlackChannel  # noqa: PLC0415
 from app.core.exceptions import IntegrationNotFoundError
 from app.core.logging import CorrelationAdapter, get_logger
-from app.db.records import IntegrationRecord, Provider
+from app.db.records import IntegrationRecord, PlanTier, Provider
 from app.db.storage_service import StorageService
 from app.domains.crm.hubspot.workflow_service import WorkflowService
+from app.providers.slack.client import SlackClient
 
 logger = get_logger("integration.service")
+
+# Global, cross-request caches. Evicted dynamically on reads based on TTL.
+_GLOBAL_INTEGRATION_CACHE: dict[
+    tuple[str, Provider], tuple[float, IntegrationRecord | None]
+] = {}
+_GLOBAL_SLACK_TEAM_CACHE: dict[str, tuple[float, IntegrationRecord | None]] = {}
+_GLOBAL_TIER_CACHE: dict[str, tuple[float, PlanTier]] = {}
+CACHE_TTL = 300.0  # 5 minutes
 
 
 class IntegrationService:
@@ -68,12 +79,24 @@ class IntegrationService:
             - Checks the _integration_cache before querying the storage service.
 
         """
+        now = time.time()
         key = (workspace_id, provider)
+
+        # 1. Instance (request-scoped) cache
         if key in self._integration_cache:
             return self._integration_cache[key]
 
+        # 2. Global (application-scoped) TTL cache
+        if key in _GLOBAL_INTEGRATION_CACHE:
+            ts, record = _GLOBAL_INTEGRATION_CACHE[key]
+            if now - ts < CACHE_TTL:
+                self._integration_cache[key] = record
+                return record
+            del _GLOBAL_INTEGRATION_CACHE[key]  # Evict expired
+
         row = await self.storage.get_integration(workspace_id, provider)
         self._integration_cache[key] = row
+        _GLOBAL_INTEGRATION_CACHE[key] = (now, row)
         return row
 
     async def get_integration_by_slack_team_id(
@@ -93,11 +116,24 @@ class IntegrationService:
             - Maintains a local Slack team cache to prevent redundant lookups.
 
         """
+        now = time.time()
+
+        # 1. Instance cache
         if team_id in self._slack_team_cache:
             return self._slack_team_cache[team_id]
 
+        # 2. Global cache
+        if team_id in _GLOBAL_SLACK_TEAM_CACHE:
+            ts, record = _GLOBAL_SLACK_TEAM_CACHE[team_id]
+            if now - ts < CACHE_TTL:
+                self._slack_team_cache[team_id] = record
+                return record
+            del _GLOBAL_SLACK_TEAM_CACHE[team_id]
+
         row = await self.storage.get_integration_by_slack_team_id(team_id)
         self._slack_team_cache[team_id] = row
+        _GLOBAL_SLACK_TEAM_CACHE[team_id] = (now, row)
+
         return row
 
     # ---------------------------------------------------------
@@ -150,16 +186,66 @@ class IntegrationService:
         if integration.metadata and "channel_id" in integration.metadata:
             return integration.metadata["channel_id"]
 
-        # 3. Fallback: Slack team ID is NOT a valid channel.
-        # We cannot default to it.
-
+        # 3. Fallback: No channel found
         raise IntegrationNotFoundError(
             f"No default Slack channel configured for workspace {workspace_id}"
         )
 
-        raise IntegrationNotFoundError(
-            f"No default Slack channel configured for workspace {workspace_id}"
-        )
+    async def get_tier(self, workspace_id: str) -> PlanTier:
+        """Description:
+            Retrieves the plan tier for a workspace, accounting for the 14-day trial.
+
+        Args:
+            workspace_id (str): The workspace to check.
+
+        Returns:
+            PlanTier: The assigned tier (FREE or PRO).
+
+        """
+        now = time.time()
+        if workspace_id in _GLOBAL_TIER_CACHE:
+            ts, tier = _GLOBAL_TIER_CACHE[workspace_id]
+            if now - ts < CACHE_TTL:
+                return tier
+            del _GLOBAL_TIER_CACHE[workspace_id]
+
+        workspace = await self.storage.get_workspace(workspace_id)
+        if not workspace:
+            _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.FREE)
+            return PlanTier.FREE
+
+        # 1. Active subscription check
+        if workspace.subscription_status == "active" or workspace.tier == PlanTier.PRO:
+            _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.PRO)
+            return PlanTier.PRO
+
+        # 2. 14-day Trial check
+        install_date = workspace.install_date or workspace.created_at
+        if install_date:
+            # Ensure we're comparing offset-aware datetimes
+            target_now = datetime.now(UTC)
+            if install_date.tzinfo is None:
+                install_date = install_date.replace(tzinfo=UTC)
+
+            if target_now <= install_date + timedelta(days=14):
+                _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.PRO)
+                return PlanTier.PRO
+
+        _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.FREE)
+        return PlanTier.FREE
+
+    async def is_pro_workspace(self, workspace_id: str) -> bool:
+        """Checks if a workspace is in the PRO tier (active or trialing)."""
+        tier = await self.get_tier(workspace_id)
+        return tier == PlanTier.PRO
+
+    async def is_at_least_tier(
+        self, workspace_id: str, required_tier: PlanTier
+    ) -> bool:
+        """DEPRECATED: Use is_pro_workspace(workspace_id)."""
+        if required_tier == PlanTier.FREE:
+            return True
+        return await self.is_pro_workspace(workspace_id)
 
     # OAuth lifecycle
     async def handle_hubspot_oauth_callback(self, code: str, state: str) -> str:
@@ -189,7 +275,9 @@ class IntegrationService:
             self.log.info("Resolved workspace via Slack-first install")
         else:
             # HubSpot-first install
-            workspace = await self.storage.upsert_workspace(workspace_id=state)
+            workspace = await self.storage.upsert_workspace(
+                workspace_id=state, install_date=datetime.now(UTC)
+            )
             workspace_id = workspace.id
             self.log.info("Created workspace via HubSpot-first install")
 
@@ -266,7 +354,9 @@ class IntegrationService:
                 workspace_id = existing.workspace_id
                 self.log.info("Reusing existing workspace=%s", workspace_id)
             else:
-                workspace = await self.storage.upsert_workspace(workspace_id=team_id)
+                workspace = await self.storage.upsert_workspace(
+                    workspace_id=team_id, install_date=datetime.now(UTC)
+                )
                 workspace_id = workspace.id
                 self.log.info("Created new workspace=%s", workspace_id)
 
@@ -354,6 +444,38 @@ class IntegrationService:
         Handles HubSpot uninstallation by resetting the workspace integrations.
         """
         await self.uninstall_workspace(workspace_id, trigger_hubspot_uninstall=False)
+
+    async def get_slack_client(self, integration: IntegrationRecord) -> SlackClient:
+        """Description:
+        Returns a rotation-aware SlackClient for the given integration.
+        """
+        credentials = integration.credentials
+        bot_token = credentials.get("slack_bot_token")
+        refresh_token = credentials.get("refresh_token")
+        expires_at = credentials.get("expires_at")
+
+        client = SlackClient(
+            corr_id=self.corr_id,
+            bot_token=str(bot_token),
+            refresh_token=refresh_token,
+            expires_at=expires_at,
+        )
+
+        # Set callback for token rotation
+        def on_refresh(t, r, e):
+            import asyncio  # noqa: PLC0415
+
+            asyncio.create_task(
+                self.update_slack_tokens(
+                    workspace_id=integration.workspace_id,
+                    access_token=t,
+                    refresh_token=r,
+                    expires_at=e,
+                )
+            )
+
+        client.on_token_refresh = on_refresh
+        return client
 
     async def update_slack_tokens(
         self,

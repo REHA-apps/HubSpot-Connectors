@@ -111,3 +111,17 @@ class CRMService(BaseCRMService):
             properties=properties,
             contact_id=contact_id,
         )
+
+    async def update_deal(
+        self,
+        workspace_id: str,
+        deal_id: str,
+        properties: Mapping[str, Any],
+        provider: Provider = Provider.HUBSPOT,
+    ) -> dict[str, Any]:
+        service = self._resolve_provider_service(provider)
+        return await service.update_deal(
+            workspace_id=workspace_id,
+            deal_id=deal_id,
+            properties=properties,
+        )

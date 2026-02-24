@@ -24,14 +24,6 @@ EXPLICIT_COMMANDS: dict[str, CommandConfig] = {
     "/hs-companies": {"object_type": "companies", "prefix": "Searching companies"},
     "/hs-tickets": {"object_type": "tickets", "prefix": "Searching tickets"},
     "/hs-tasks": {"object_type": "tasks", "prefix": "Searching tasks"},
-    "/hs-kb": {
-        "object_type": "knowledge_article",
-        "prefix": "Searching Knowledge Base",
-    },
-    "/hs-playbook": {
-        "object_type": "knowledge_article",
-        "prefix": "Searching Playbooks",
-    },
 }
 
 CREATE_RECORD_CALLBACK_ID = "create_hubspot_record"

@@ -4,12 +4,11 @@ from collections.abc import Mapping
 from time import time
 from typing import Any, cast
 
-from slack_sdk.web.async_client import AsyncWebClient
-
 from app.connectors.common.base import BaseChannel, BaseOAuthResult
 from app.core.config import settings
 from app.core.logging import CorrelationAdapter, get_logger
 from app.core.models.channel import Identity, NormalizedEvent, OutboundMessage
+from app.providers.slack.client import SlackClient
 from app.utils.helpers import HTTPClient
 
 logger = get_logger("slack.channel")
@@ -33,18 +32,26 @@ class SlackChannel(BaseChannel):
     supports_ephemeral: bool = True
     supports_threading: bool = True
 
-    def __init__(self, corr_id: str, bot_token: str | None = None) -> None:
+    def __init__(
+        self,
+        corr_id: str,
+        bot_token: str | None = None,
+        slack_client: SlackClient | None = None,
+    ) -> None:
         self.corr_id = corr_id
         self.log = CorrelationAdapter(logger, corr_id)
         self.http_client = HTTPClient.get_client(corr_id=corr_id)
         self.bot_token = bot_token
-        self._async_client: AsyncWebClient | None = None
+        self.slack_client = slack_client
 
-    def get_slack_client(self) -> AsyncWebClient:
-        """Lazily initialize the Slack AsyncWebClient."""
-        if not self._async_client:
-            self._async_client = AsyncWebClient(token=self.bot_token)
-        return self._async_client
+    def get_slack_client(self) -> SlackClient:
+        """Lazily initialize the SlackClient wrapper."""
+        if not self.slack_client:
+            self.slack_client = SlackClient(
+                corr_id=self.corr_id,
+                bot_token=str(self.bot_token),
+            )
+        return self.slack_client
 
     # -----------------------------
     # Authentication & Transport
@@ -140,12 +147,7 @@ class SlackChannel(BaseChannel):
         )
 
         # Use provided bot_token or fallback to kwargs
-        token = self.bot_token or kwargs.get("bot_token")
-        if not token:
-            self.log.error("No bot token provided for Slack message")
-            return None
-
-        client = AsyncWebClient(token=token)
+        client = self.slack_client or self.get_slack_client()
 
         # Slack-specific validation
         destination = message.destination
@@ -201,11 +203,17 @@ class SlackChannel(BaseChannel):
     # -----------------------------
     # Slack-Specific Methods
     # -----------------------------
-    async def open_view(self, trigger_id: str, view: dict[str, Any]) -> Any:
+    async def open_view(
+        self, trigger_id: str, view: dict[str, Any], bot_token: str | None = None
+    ) -> Any:
         """Opens a Slack modal view."""
-        return await self.get_slack_client().views_open(
-            trigger_id=trigger_id, view=view
-        )
+        client = self.slack_client
+        if bot_token:
+            client = SlackClient(corr_id=self.corr_id, bot_token=bot_token)
+        elif not client:
+            client = self.get_slack_client()
+
+        return await client.views_open(trigger_id=trigger_id, view=view)
 
     async def chat_unfurl(
         self,
@@ -286,4 +294,82 @@ class SlackChannel(BaseChannel):
             return True
         except Exception as exc:
             self.log.error("Slack apps.uninstall exception: %s", exc)
+            return False
+
+    async def get_user_by_email(self, email: str) -> str | None:
+        """Resolves a Slack user ID by their email address."""
+        try:
+            resp = await self.get_slack_client().users_lookupByEmail(email=email)
+            if resp and resp.get("ok") and "user" in resp:
+                user_data = cast(dict[str, Any], resp["user"])
+                return str(user_data.get("id"))
+        except Exception as exc:
+            self.log.error("Failed to lookup Slack user by email '%s': %s", email, exc)
+        return None
+
+    async def send_dm(
+        self,
+        user_id: str,
+        text: str,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> Mapping[str, Any] | None:
+        """Sends a private DM to a Slack user."""
+        self.log.info("SlackChannel.send_dm to user_id=%s", user_id)
+
+        message = OutboundMessage(
+            workspace_id="DM",  # Arbitrary for DMs
+            destination=user_id,
+            text=text,
+            provider_metadata={"blocks": blocks},
+        )
+        return await self.send_message(message)
+
+    async def get_thread_replies(
+        self, channel_id: str, thread_ts: str
+    ) -> list[dict[str, Any]]:
+        """Fetches all replies in a Slack thread."""
+        try:
+            resp = await self.get_slack_client().conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+            )
+            if resp.get("ok"):
+                return cast(list[dict[str, Any]], resp.get("messages", []))
+        except Exception as exc:
+            self.log.error(
+                "Failed to fetch thread replies for channel=%s ts=%s: %s",
+                channel_id,
+                thread_ts,
+                exc,
+            )
+        return []
+
+    async def send_via_response_url(
+        self,
+        response_url: str,
+        text: str,
+        blocks: list[dict[str, Any]] | None = None,
+        replace_original: bool = False,
+    ) -> bool:
+        """Sends a response to a Slack slash command using the response_url webhook.
+
+        This is highly reliable as it bypasses channel discovery/membership issues.
+        """
+        self.log.info(
+            "SlackChannel.send_via_response_url using %s", response_url[:30] + "..."
+        )
+
+        payload = {
+            "text": text,
+            "replace_original": replace_original,
+        }
+        if blocks:
+            payload["blocks"] = blocks
+
+        try:
+            resp = await self.http_client.post(response_url, json=payload)
+            resp.raise_for_status()
+            return True
+        except Exception as exc:
+            self.log.error("Failed to send to Slack response_url: %s", exc)
             return False

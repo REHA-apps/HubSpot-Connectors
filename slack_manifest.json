@@ -22,7 +22,8 @@
         "message.mpim",
         "app_mention",
         "link_shared",
-        "app_uninstalled"
+        "app_uninstalled",
+        "app_home_opened"
       ]
     },
     "interactivity": {
@@ -35,12 +36,23 @@
       "display_name": "REHA Bot",
       "always_online": true
     },
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true
+    },
     "slash_commands": [
       {
         "command": "/hs",
         "url": "https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands",
         "description": "Smart HubSpot search",
         "usage_hint": "[query]",
+        "should_escape": false
+      },
+      {
+        "command": "/hs-companies",
+        "url": "https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands",
+        "description": "Search HubSpot companies",
+        "usage_hint": "company name or domain",
         "should_escape": false
       },
       {
@@ -58,10 +70,10 @@
         "should_escape": false
       },
       {
-        "command": "/hs-companies",
+        "command": "/hs-help",
         "url": "https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands",
-        "description": "Search HubSpot companies",
-        "usage_hint": "company name or domain",
+        "description": "Show help and available commands",
+        "usage_hint": " ",
         "should_escape": false
       },
       {
@@ -72,10 +84,10 @@
         "should_escape": false
       },
       {
-        "command": "/hs-tickets",
+        "command": "/hs-reports",
         "url": "https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands",
-        "description": "Search HubSpot tickets",
-        "usage_hint": "ticket subject or ID",
+        "description": "View HubSpot reports and dashboards",
+        "usage_hint": " ",
         "should_escape": false
       },
       {
@@ -86,17 +98,10 @@
         "should_escape": false
       },
       {
-        "command": "/hs-kb",
+        "command": "/hs-tickets",
         "url": "https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands",
-        "description": "Search Knowledge Base",
-        "usage_hint": "topic or question",
-        "should_escape": false
-      },
-      {
-        "command": "/hs-playbook",
-        "url": "https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands",
-        "description": "Search Playbooks",
-        "usage_hint": "playbook name",
+        "description": "Search HubSpot tickets",
+        "usage_hint": "ticket subject or ID",
         "should_escape": false
       }
     ],
@@ -106,6 +111,12 @@
         "type": "global",
         "callback_id": "create_hubspot_record",
         "description": "Create a new Contact, Deal, Task, or Ticket"
+      },
+      {
+        "name": "Create HubSpot Record",
+        "type": "message",
+        "callback_id": "create_hubspot_record",
+        "description": "Create a new Contact, Deal, Task, or Ticket from this message"
       }
     ]
   },

@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from app.connectors.slack.services.channel_service import ChannelService
 from app.core.logging import CorrelationAdapter, get_logger
-from app.domains.crm.channel_service import ChannelService
 from app.domains.crm.integration_service import IntegrationService
 
 logger = get_logger("event.router")
@@ -38,7 +38,7 @@ class EventRouter:
         workspace_id: str,
         contact: Mapping[str, Any],
         channel: str,
-    ) -> Mapping[str, Any] | None:
+    ) -> str | None:
         self.log.info(
             "Routing HubSpot contact update id=%s to Slack channel=%s",
             contact.get("id"),
@@ -63,7 +63,7 @@ class EventRouter:
         workspace_id: str,
         obj: Mapping[str, Any],
         channel: str | None = None,
-    ) -> Mapping[str, Any] | None:
+    ) -> str | None:
         self.log.info(
             "Routing HubSpot object id=%s to Slack channel=%s",
             obj.get("id"),

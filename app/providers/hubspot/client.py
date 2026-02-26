@@ -344,9 +344,9 @@ class HubSpotClient(BaseClient):
         """Creates a CRM note and associates it with a contact, deal, or company."""
         type_id = self._NOTE_ASSOC_TYPE_IDS.get(associated_type.lower(), 202)  # noqa: PLR2004
 
-        from datetime import UTC, datetime  # noqa: PLC0415
+        from datetime import UTC, datetime
 
-        from app.utils.transformers import to_hubspot_timestamp  # noqa: PLC0415
+        from app.utils.transformers import to_hubspot_timestamp
 
         properties = {
             "hs_note_body": content,
@@ -394,7 +394,6 @@ class HubSpotClient(BaseClient):
         # If query_string is provided, use it for broad "query" search (smart match)
         # Note: If filters/filterGroups are also provided, HubSpot API might
         # ignore query or combine them.
-        # or combine them.
         # But for our use case, we usually want EITHER smart query OR specific filters.
 
         groups = []
@@ -572,16 +571,12 @@ class HubSpotClient(BaseClient):
         # Files search API is limited. We'll try to find by name if possible,
         # otherwise we might need to rely on list and filter (inefficient).
         # Official endpoint: GET /files/v3/files/search
-        # It supports filtering. Let's try filtered search by name?
-        # Not documented well for "contains".
-        # Fallback: List files and filter in memory? No, too many files.
-        # Let's try contentsearch for documents too?
-        # params = {"type": "DOCUMENT", "term": query} -> might work?
-        # Let's try purely FILES API for now with a simple search if supported.
-        # Actually, let's use the CRM Object 'documents' if available?
-        # If not, use generic 'files' search scope?
-        # We will assume 'files' means generic files for now.
-        return []  # Placeholder until better API confirmed or just use KB.
+        # HubSpot Files API search is not well-documented for content search.
+        # Raise explicitly until a proper implementation is added.
+        raise NotImplementedError(
+            "search_files is not yet implemented — "
+            "HubSpot Files API search support is limited"
+        )
 
     async def get_ticket(self, object_id: str) -> dict[str, Any] | None:
         return await self.get_object(

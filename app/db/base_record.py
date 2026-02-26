@@ -15,7 +15,7 @@ class BaseRecord(BaseModel):
 
     Rules Applied:
         - Enforces immutability (frozen=True) for domain data integrity.
-        - Provides standardized constructors and serialiation helpers (Supabase).
+        - Provides standardized constructors and serialization helpers (Supabase).
         - Automatically handles timestamp normalization.
     """
 
@@ -30,7 +30,7 @@ class BaseRecord(BaseModel):
 
     # Timestamp normalization
     @field_validator("created_at", "updated_at", mode="before", check_fields=False)
-    def parse_timestamps(cls, v):
+    def parse_timestamps(cls, v: str | datetime | None) -> datetime | None:
         if isinstance(v, str):
             return datetime.fromisoformat(v.replace("Z", "+00:00"))
         return v

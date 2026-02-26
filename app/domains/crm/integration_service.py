@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime, timedelta
+from functools import cached_property
 from typing import Any
 
 from app.connectors.hubspot.channel import HubSpotChannel
-from app.connectors.slack.channel import SlackChannel  # noqa: PLC0415
+from app.connectors.slack.channel import SlackChannel
 from app.core.exceptions import IntegrationNotFoundError
 from app.core.logging import CorrelationAdapter, get_logger
 from app.db.records import IntegrationRecord, PlanTier, Provider
@@ -15,23 +16,18 @@ from app.providers.slack.client import SlackClient
 
 logger = get_logger("integration.service")
 
-# Global, cross-request caches. Evicted dynamically on reads based on TTL.
-_GLOBAL_INTEGRATION_CACHE: dict[
-    tuple[str, Provider], tuple[float, IntegrationRecord | None]
-] = {}
-_GLOBAL_SLACK_TEAM_CACHE: dict[str, tuple[float, IntegrationRecord | None]] = {}
+# Global tier cache — caches derived PlanTier values (not raw records).
+# Integration record caching is handled by StorageService's AsyncTTL caches.
 _GLOBAL_TIER_CACHE: dict[str, tuple[float, PlanTier]] = {}
-CACHE_TTL = 300.0  # 5 minutes
+_TIER_CACHE_TTL = 300.0  # 5 minutes
 
 
 class IntegrationService:
-    """Description:
-        Domain service for managing workspace-provider integrations and OAuth
-        lifecycles.
+    """Domain service for managing workspace-provider integrations and OAuth
+    lifecycles.
 
-    Rules Applied:
-        - Implements request-scoped caching for integration records.
-        - Orchestrates multi-provider installation flows (Slack-first vs HubSpot-first).
+    Integration record caching is handled by StorageService's AsyncTTL caches.
+    This service maintains only a tier cache for derived PlanTier lookups.
     """
 
     def __init__(
@@ -47,94 +43,55 @@ class IntegrationService:
         self.slack_channel = SlackChannel(corr_id)
         self.hubspot_channel = HubSpotChannel(corr_id)
 
-        # Avoid circular import
-        from app.domains.crm.hubspot.service import HubSpotService  # noqa: PLC0415
+    @cached_property
+    def hubspot_service(self):
+        """Lazy-loaded to avoid circular imports and unnecessary initialization."""
+        from app.domains.crm.hubspot.service import HubSpotService
 
-        self.hubspot_service = HubSpotService(self.corr_id, storage=self.storage)
-        self.workflow_service = WorkflowService(corr_id, self.storage)
+        return HubSpotService(self.corr_id, storage=self.storage)
 
-        # Typed caches
-        self._integration_cache: dict[
-            tuple[str, Provider], IntegrationRecord | None
-        ] = {}
-        self._slack_team_cache: dict[str, IntegrationRecord | None] = {}
+    @cached_property
+    def workflow_service(self):
+        """Lazy-loaded — only needed during OAuth install flows."""
+        return WorkflowService(self.corr_id, self.storage)
 
-    # Caching helpers
     async def get_integration(
         self,
         workspace_id: str,
         provider: Provider,
     ) -> IntegrationRecord | None:
-        """Description:
-            Fetches an integration record, utilizing local caching to minimize DB load.
+        """Fetches an integration record.
+
+        Delegates to StorageService which maintains its own AsyncTTL cache
+        with proper invalidation on upserts, deletes, and token updates.
 
         Args:
-            workspace_id (str): The workspace to fetch for.
-            provider (Provider): The specific provider (Slack/HubSpot).
+            workspace_id: The workspace to fetch for.
+            provider: The specific provider (Slack/HubSpot).
 
         Returns:
-            IntegrationRecord | None: The record if found, else None.
-
-        Rules Applied:
-            - Checks the _integration_cache before querying the storage service.
+            The integration record if found, else None.
 
         """
-        now = time.time()
-        key = (workspace_id, provider)
-
-        # 1. Instance (request-scoped) cache
-        if key in self._integration_cache:
-            return self._integration_cache[key]
-
-        # 2. Global (application-scoped) TTL cache
-        if key in _GLOBAL_INTEGRATION_CACHE:
-            ts, record = _GLOBAL_INTEGRATION_CACHE[key]
-            if now - ts < CACHE_TTL:
-                self._integration_cache[key] = record
-                return record
-            del _GLOBAL_INTEGRATION_CACHE[key]  # Evict expired
-
-        row = await self.storage.get_integration(workspace_id, provider)
-        self._integration_cache[key] = row
-        _GLOBAL_INTEGRATION_CACHE[key] = (now, row)
-        return row
+        return await self.storage.get_integration(workspace_id, provider)
 
     async def get_integration_by_slack_team_id(
         self,
         team_id: str,
     ) -> IntegrationRecord | None:
-        """Description:
-            Retrieves an integration record by its Slack team ID with local caching.
+        """Retrieves an integration record by Slack team ID.
+
+        Delegates to StorageService which maintains its own AsyncTTL cache
+        for slack_team_id → workspace_id mapping.
 
         Args:
-            team_id (str): The team ID from Slack.
+            team_id: The team ID from Slack.
 
         Returns:
-            IntegrationRecord | None: The found record or None.
-
-        Rules Applied:
-            - Maintains a local Slack team cache to prevent redundant lookups.
+            The integration record if found, else None.
 
         """
-        now = time.time()
-
-        # 1. Instance cache
-        if team_id in self._slack_team_cache:
-            return self._slack_team_cache[team_id]
-
-        # 2. Global cache
-        if team_id in _GLOBAL_SLACK_TEAM_CACHE:
-            ts, record = _GLOBAL_SLACK_TEAM_CACHE[team_id]
-            if now - ts < CACHE_TTL:
-                self._slack_team_cache[team_id] = record
-                return record
-            del _GLOBAL_SLACK_TEAM_CACHE[team_id]
-
-        row = await self.storage.get_integration_by_slack_team_id(team_id)
-        self._slack_team_cache[team_id] = row
-        _GLOBAL_SLACK_TEAM_CACHE[team_id] = (now, row)
-
-        return row
+        return await self.storage.get_integration_by_slack_team_id(team_id)
 
     # ---------------------------------------------------------
     # Workspace resolution
@@ -205,7 +162,7 @@ class IntegrationService:
         now = time.time()
         if workspace_id in _GLOBAL_TIER_CACHE:
             ts, tier = _GLOBAL_TIER_CACHE[workspace_id]
-            if now - ts < CACHE_TTL:
+            if now - ts < _TIER_CACHE_TTL:
                 return tier
             del _GLOBAL_TIER_CACHE[workspace_id]
 
@@ -248,7 +205,7 @@ class IntegrationService:
         return await self.is_pro_workspace(workspace_id)
 
     # OAuth lifecycle
-    async def handle_hubspot_oauth_callback(self, code: str, state: str) -> str:
+    async def handle_hubspot_oauth_callback(self, code: str, state: str | None) -> str:
         """Description:
             Processes the HubSpot OAuth callback for both Slack-first and
             HubSpot-first flows.
@@ -268,16 +225,23 @@ class IntegrationService:
         self.log.info("Exchanging HubSpot OAuth code")
         token = await self.hubspot_channel.exchange_token(code)
 
-        # Slack-first install
-        slack_integration = await self.get_integration_by_slack_team_id(state)
+        # Slack-first install (only if state was not dropped)
+        slack_integration = None
+        if state:
+            slack_integration = await self.get_integration_by_slack_team_id(state)
+
         if slack_integration:
             workspace_id = slack_integration.workspace_id
             self.log.info("Resolved workspace via Slack-first install")
         else:
-            # HubSpot-first install
+            # HubSpot-first install or state was dropped
+            import uuid
+
+            workspace_id = state or str(uuid.uuid4())
             workspace = await self.storage.upsert_workspace(
-                workspace_id=state, install_date=datetime.now(UTC)
+                workspace_id=workspace_id, install_date=datetime.now(UTC)
             )
+            # Re-read to guarantee we have the assigned ID
             workspace_id = workspace.id
             self.log.info("Created workspace via HubSpot-first install")
 
@@ -330,6 +294,7 @@ class IntegrationService:
 
         token = await self.slack_channel.exchange_token(code)
         team_id = token.team_id
+        team_name = token.raw.get("team", {}).get("name", "")
         bot_token = token.access_token
 
         # HubSpot-first install → state is workspace_id
@@ -371,6 +336,7 @@ class IntegrationService:
             },
             "metadata": {
                 "slack_team_id": team_id,
+                "slack_team_name": team_name,
             },
         }
 
@@ -463,16 +429,32 @@ class IntegrationService:
 
         # Set callback for token rotation
         def on_refresh(t, r, e):
-            import asyncio  # noqa: PLC0415
+            import asyncio
 
-            asyncio.create_task(
-                self.update_slack_tokens(
-                    workspace_id=integration.workspace_id,
-                    access_token=t,
-                    refresh_token=r,
-                    expires_at=e,
+            async def _persist_tokens():
+                try:
+                    await self.update_slack_tokens(
+                        workspace_id=integration.workspace_id,
+                        access_token=t,
+                        refresh_token=r,
+                        expires_at=e,
+                    )
+                except Exception as exc:
+                    self.log.error(
+                        "Failed to persist rotated Slack tokens for workspace=%s: %s",
+                        integration.workspace_id,
+                        exc,
+                    )
+
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_persist_tokens())
+            except RuntimeError:
+                self.log.error(
+                    "No running event loop — cannot persist "
+                    "rotated tokens for workspace=%s",
+                    integration.workspace_id,
                 )
-            )
 
         client.on_token_refresh = on_refresh
         return client

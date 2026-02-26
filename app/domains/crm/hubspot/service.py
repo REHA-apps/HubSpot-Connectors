@@ -76,7 +76,7 @@ class HubSpotService(BaseCRMService):
                 "Reactive uninstallation triggered for workspace_id=%s", workspace_id
             )
             # Avoid circular import
-            from app.domains.crm.integration_service import (  # noqa: PLC0415
+            from app.domains.crm.integration_service import (
                 IntegrationService,
             )
 
@@ -232,6 +232,58 @@ class HubSpotService(BaseCRMService):
     ) -> Mapping[str, Any]:
         client = await self.get_client(workspace_id)
         return await client.create_task(properties)
+
+    async def associate_object(
+        self,
+        workspace_id: str,
+        from_type: str,
+        from_id: str,
+        to_type: str,
+        to_id: str,
+    ) -> None:
+        """Associate two CRM objects using HubSpot defined types."""
+        client = await self.get_client(workspace_id)
+
+        # HubSpot association types for Task (from)
+        # Category: HUBSPOT_DEFINED
+        # 10: Task -> Contact
+        # 12: Task -> Deal
+        # 14: Task -> Company
+
+        type_id = 0
+        if from_type == "task":
+            if to_type == "contact":
+                type_id = 10
+            elif to_type == "deal":
+                type_id = 12
+            elif to_type == "company":
+                type_id = 14
+        elif from_type == "ticket":
+            if to_type in ("contact", "contacts"):
+                type_id = 16
+            elif to_type in ("deal", "deals"):
+                type_id = 28
+            elif to_type in ("company", "companies"):
+                type_id = 26
+
+        await client.request(
+            "PUT",
+            f"associations/{from_type}/{to_type}/batch/create",
+            json={
+                "inputs": [
+                    {
+                        "from": {"id": from_id},
+                        "to": {"id": to_id},
+                        "types": [
+                            {
+                                "associationCategory": "HUBSPOT_DEFINED",
+                                "associationTypeId": type_id,
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
 
     async def get_contact(
         self, workspace_id: str, object_id: str

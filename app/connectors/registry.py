@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from fastapi import APIRouter
 
@@ -22,12 +22,12 @@ class ConnectorManifest:
 
 
 class ConnectorRegistry:
-    """Description:
-    Central registry for managing multi-platform connectors (Slack, HubSpot, WhatsApp).
+    """Central registry for multi-platform connectors (Slack, HubSpot, WhatsApp).
+
     Allows for dynamic discovery and registration of platform-specific components.
     """
 
-    _connectors: dict[str, ConnectorManifest] = {}
+    _connectors: ClassVar[dict[str, ConnectorManifest]] = {}
 
     @classmethod
     def register(

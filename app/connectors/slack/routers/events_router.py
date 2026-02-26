@@ -22,6 +22,10 @@ from app.utils.constants import ErrorCode
 router = APIRouter(prefix="/slack", tags=["slack-events"])
 logger = get_logger("slack.events")
 
+# Simple in-memory de-duplication for unfurls (channel:ts)
+LATEST_UNFURLS: set[str] = set()
+DEDUPE_LIMIT = 100
+
 
 @router.post(
     "/events",
@@ -101,7 +105,20 @@ async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
         if not links or not channel or not ts:
             return {"ok": True}
 
-        log.info("Processing Slack link_shared event for channel=%s ts=%s", channel, ts)
+        # Deduplication check
+        dedupe_key = f"{channel}:{ts}"
+        if dedupe_key in LATEST_UNFURLS:
+            log.info("Skipping duplicate unfurl for %s", dedupe_key)
+            return {"ok": True}
+        _mark_unfurled(dedupe_key)
+
+        log.info(
+            "Processing Slack link_shared event: channel=%s, ts=%s, links_count=%d",
+            channel,
+            ts,
+            len(links),
+        )
+        log.debug("Full link_shared event: %s", event)
 
         # integration_service injected via Depends()
         workspace_id = await integration_service.resolve_workspace(team_id)
@@ -129,11 +146,50 @@ async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
         )
         return {"ok": True}
 
-    # Handle message events for Threaded Replies (Sync to CRM)
     if event_type == "message":
         subtype = event.get("subtype")
         thread_ts = event.get("thread_ts")
         ts = event.get("ts")
+        text = event.get("text", "")
+        blocks = event.get("blocks")
+
+        if blocks:
+            # Link Sniffing Workaround: Extract links and trigger unfurl manually
+            extracted_urls = _extract_links_from_blocks(blocks)
+            hubspot_links = [{"url": u} for u in extracted_urls if "hubspot.com" in u]
+
+            if hubspot_links and not event.get("bot_id"):
+                # Deduplication check for fallback logic
+                dedupe_key = f"{event.get('channel')}:{ts}"
+                if dedupe_key in LATEST_UNFURLS:
+                    log.info("Skipping duplicate sniffed unfurl for %s", dedupe_key)
+                    return {"ok": True}
+                _mark_unfurled(dedupe_key)
+
+                log.info("Found %d HubSpot links in message blocks", len(hubspot_links))
+                # Trigger unfurl logic
+                try:
+                    workspace_id = await integration_service.resolve_workspace(team_id)
+                    integration = (
+                        await integration_service.get_integration_by_slack_team_id(
+                            team_id
+                        )
+                    )
+                    if integration:
+                        channel_service = ChannelService(
+                            corr_id=corr_id,
+                            integration_service=integration_service,
+                            slack_integration=integration,
+                        )
+                        background_tasks.add_task(
+                            channel_service.handle_link_shared,
+                            workspace_id=workspace_id,
+                            channel=event.get("channel"),
+                            ts=ts,
+                            links=hubspot_links,
+                        )
+                except Exception as exc:
+                    log.error("Failed to trigger manual unfurl: %s", exc)
 
         # Filter: Standard user message (no subtype usually), not a bot, and IS
         # a reply (thread_ts != ts)
@@ -232,10 +288,48 @@ async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
                 slack_integration=integration,
             )
 
-            # Publishing view to Slack can be slow, handle in background task
             background_tasks.add_task(
                 channel_service.handle_app_home_opened,
                 user_id=user_id,
             )
 
+    # Log unhandled event types for debugging configuration
+    if event_type not in (
+        "app_uninstalled",
+        "link_shared",
+        "message",
+        "reaction_added",
+        "app_home_opened",
+    ):
+        log.info("Unhandled event type received: %s", event_type)
+
     return {"ok": True}
+
+
+def _extract_links_from_blocks(blocks: list[dict[str, Any]]) -> list[str]:
+    """Recursively extract all type: link URLs from Slack blocks."""
+    links = []
+
+    def traverse(item: Any):
+        if isinstance(item, list):
+            for i in item:
+                traverse(i)
+        elif isinstance(item, dict):
+            if item.get("type") == "link" and item.get("url"):
+                links.append(item["url"])
+            for value in item.values():
+                traverse(value)
+
+    traverse(blocks)
+    return list(set(links))  # Dedup
+
+
+def _mark_unfurled(key: str):
+    """Mark a message as unfurled and maintain cache size."""
+    LATEST_UNFURLS.add(key)
+    if len(LATEST_UNFURLS) > DEDUPE_LIMIT:
+        # Remove oldest items (cheaply)
+        # Convert to list to pop first N or just clear if too big
+        overflow = list(LATEST_UNFURLS)[-DEDUPE_LIMIT:]
+        LATEST_UNFURLS.clear()
+        LATEST_UNFURLS.update(overflow)

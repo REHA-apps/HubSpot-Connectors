@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -8,6 +9,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from app.connectors.slack.services.channel_service import ChannelService
 from app.connectors.slack.ui import ModalBuilder
+from app.core.exceptions import HubSpotAPIError
 from app.core.logging import CorrelationAdapter, get_logger
 from app.core.models.ui import ModalMetadata, UnifiedCard
 from app.domains.ai.service import AIService
@@ -36,7 +38,7 @@ class InteractionService:
         self.hubspot = HubSpotService(corr_id)
         self.ai = ai or AIService(corr_id)
 
-    async def handle_interaction(self, payload: Mapping[str, Any]) -> None:
+    async def handle_interaction(self, payload: Mapping[str, Any]) -> Any:
         """Main entry point for Slack interaction payloads."""
         try:
             interaction_type = payload.get("type")
@@ -74,13 +76,23 @@ class InteractionService:
             dispatch = {
                 "block_actions": self._handle_block_actions,
                 "view_submission": self._handle_view_submission,
+                "block_suggestion": self._handle_block_suggestion,
             }
-
+            # 4. Dispatch
             handler = dispatch.get(interaction_type)
             if handler:
-                await handler(payload, integration, channel_service)
+                result = await handler(
+                    payload=payload,
+                    integration=integration,
+                    channel_service=channel_service,
+                )
+                if isinstance(result, dict):
+                    return result
             else:
-                self.log.warning("No handler for interaction type=%s", interaction_type)
+                self.log.error(
+                    "No handler for interaction type: %s",
+                    interaction_type,
+                )
 
         except Exception as exc:
             self.log.error("Failed to handle Slack interaction: %s", exc, exc_info=True)
@@ -126,6 +138,17 @@ class InteractionService:
             "open_calculator": self._handle_open_calculator_modal,
             "schedule_meeting": self._handle_open_meeting_modal,
         }
+
+        # Ticket Control Panel Actions
+        if action_id in (
+            "ticket_claim",
+            "ticket_close",
+            "ticket_delete",
+            "ticket_transcript",
+        ):
+            return await self._handle_ticket_action(
+                action_id, payload, integration, channel_service
+            )
 
         for prefix, handler in prefixes.items():
             if action_id.startswith(prefix):
@@ -1117,7 +1140,7 @@ class InteractionService:
             if len(companies) == 1:
                 company = companies[0]
                 analysis = await self.ai.analyze_polymorphic(company, "company")
-                from app.domains.ai.service import AICompanyAnalysis  # noqa: PLC0415
+                from app.domains.ai.service import AICompanyAnalysis
 
                 card = channel_service.cards.build_company(
                     company, cast(AICompanyAnalysis, analysis), include_actions=False
@@ -1417,29 +1440,39 @@ class InteractionService:
                 if value:
                     properties[action_id] = value
 
+        # Extract association (it's in a different block pattern)
+        association = None
+        assoc_actions = state_values.get("block_association", {})
+        if "association_search" in assoc_actions:
+            association = (
+                assoc_actions["association_search"]
+                .get("selected_option", {})
+                .get("value")
+            )
+
         if object_type == "task":
-            # Map hs_task_due_date (YYYY-MM-DD) to hs_timestamp (milliseconds)
-            if "hs_task_due_date" in properties:
-                from datetime import UTC, datetime  # noqa: PLC0415
+            await self._handle_task_submission(
+                integration=integration,
+                properties=properties,
+                association=association,
+                channel_service=channel_service,
+                response_url=view.get("private_metadata"),  # Attempting to get context
+                channel_id=None,  # Will be parsed if metadata is JSON
+                user_id=str(payload.get("user", {}).get("id", "")),
+            )
+            return
 
-                from app.utils.transformers import to_hubspot_timestamp  # noqa: PLC0415
+        if object_type == "ticket":
+            await self._handle_ticket_submission(
+                integration=integration,
+                properties=properties,
+                association=association,
+                channel_service=channel_service,
+                user_id=str(payload.get("user", {}).get("id", "")),
+            )
+            return
 
-                date_str = properties.pop("hs_task_due_date")
-                try:
-                    # Slack datepicker returns YYYY-MM-DD
-                    dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
-                    properties["hs_timestamp"] = str(to_hubspot_timestamp(dt))
-                except ValueError:
-                    self.log.error("Failed to parse hs_task_due_date: %s", date_str)
-
-            if "hs_timestamp" not in properties:
-                from datetime import UTC, datetime  # noqa: PLC0415
-
-                from app.utils.transformers import to_hubspot_timestamp  # noqa: PLC0415
-
-                properties["hs_timestamp"] = str(
-                    to_hubspot_timestamp(datetime.now(UTC))
-                )
+        # Create Object (Legacy path for other objects)
 
         # Create Object
         hubspot_client = await self.hubspot.get_client(integration.workspace_id)
@@ -1526,7 +1559,7 @@ class InteractionService:
             if not meetings:
                 card = cards.build_empty("No meetings found for this contact.")
             else:
-                from app.utils.transformers import to_datetime  # noqa: PLC0415
+                from app.utils.transformers import to_datetime
 
                 # Sort by start time descending
                 meetings.sort(
@@ -1629,7 +1662,7 @@ class InteractionService:
             return
 
         # Combine date and time
-        from datetime import datetime  # noqa: PLC0415
+        from datetime import datetime
 
         try:
             dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
@@ -1639,9 +1672,9 @@ class InteractionService:
             self.log.error("Failed to parse meeting date/time: %s", exc)
             return
 
-        from datetime import datetime, timedelta  # noqa: PLC0415
+        from datetime import datetime, timedelta
 
-        from app.utils.transformers import to_hubspot_iso8601  # noqa: PLC0415
+        from app.utils.transformers import to_hubspot_iso8601
 
         # Use naive dt as base if we assume local, or UTC if we want to be safe.
         # Given the Slack picker, we'll assume the string is the wall time.
@@ -2008,7 +2041,7 @@ class InteractionService:
             return None
 
         try:
-            from app.connectors.slack.ui import CardBuilder  # noqa: PLC0415
+            from app.connectors.slack.ui import CardBuilder
 
             if isinstance(view_or_card, dict):
                 modal = view_or_card
@@ -2048,7 +2081,7 @@ class InteractionService:
             return None
 
         try:
-            from app.connectors.slack.ui import CardBuilder  # noqa: PLC0415
+            from app.connectors.slack.ui import CardBuilder
 
             builder = CardBuilder()
             modal = builder.build_loading_modal(title=title)
@@ -2087,7 +2120,7 @@ class InteractionService:
             return False
 
         try:
-            from app.connectors.slack.ui import CardBuilder  # noqa: PLC0415
+            from app.connectors.slack.ui import CardBuilder
 
             if isinstance(view_or_card, dict):
                 modal = view_or_card
@@ -2188,3 +2221,413 @@ class InteractionService:
                         )
                     except Exception:
                         pass
+
+    async def _handle_block_suggestion(
+        self,
+        payload: Mapping[str, Any],
+        integration: Any,
+        channel_service: ChannelService,
+    ) -> dict[str, Any]:
+        """Handles real-time search suggestions for the Association dropdown."""
+        action_id = payload.get("action_id")
+        value = payload.get("value", "")
+
+        if action_id != "association_search":
+            return {"options": []}
+
+        self.log.info("Performing association search for query: %s", value)
+
+        try:
+            hubspot_client = await self.hubspot.get_client(integration.workspace_id)
+
+            # 1. Search Contacts, Deals, and Companies in parallel
+            import asyncio
+
+            search_tasks = [
+                hubspot_client.search_objects(
+                    "contacts",
+                    filters=[
+                        {
+                            "propertyName": "firstname",
+                            "operator": "CONTAINS_TOKEN",
+                            "value": value,
+                        }
+                    ],
+                    limit=5,
+                ),
+                hubspot_client.search_objects(
+                    "deals",
+                    filters=[
+                        {
+                            "propertyName": "dealname",
+                            "operator": "CONTAINS_TOKEN",
+                            "value": value,
+                        }
+                    ],
+                    limit=5,
+                ),
+                hubspot_client.search_objects(
+                    "companies",
+                    filters=[
+                        {
+                            "propertyName": "name",
+                            "operator": "CONTAINS_TOKEN",
+                            "value": value,
+                        }
+                    ],
+                    limit=5,
+                ),
+            ]
+
+            search_results = await asyncio.gather(*search_tasks)
+            contacts_results, deals_results, companies_results = search_results
+
+            options = []
+
+            # 2. Format results as Slack options
+            # (results are already just the list from client.py)
+            for obj in contacts_results:
+                props = obj["properties"]
+                name = (
+                    f"{props.get('firstname', '')} {props.get('lastname', '')}".strip()
+                    or props.get("email", "Unknown")
+                )
+                options.append(
+                    {
+                        "text": {"type": "plain_text", "text": f"👤 Contact: {name}"},
+                        "value": f"contact:{obj['id']}",
+                    }
+                )
+
+            for obj in deals_results:
+                name = obj["properties"].get("dealname", "Unnamed Deal")
+                options.append(
+                    {
+                        "text": {"type": "plain_text", "text": f"💰 Deal: {name}"},
+                        "value": f"deal:{obj['id']}",
+                    }
+                )
+
+            for obj in companies_results:
+                name = obj["properties"].get("name", "Unnamed Company")
+                options.append(
+                    {
+                        "text": {"type": "plain_text", "text": f"🏢 Company: {name}"},
+                        "value": f"company:{obj['id']}",
+                    }
+                )
+
+            return {"options": options[:25]}
+
+        except Exception as exc:
+            self.log.error("Failed to fetch search suggestions: %s", exc)
+            return {"options": []}
+
+    async def _handle_task_submission(
+        self,
+        integration: Any,
+        properties: dict[str, Any],
+        association: str | None,
+        channel_service: ChannelService,
+        response_url: str | None,
+        channel_id: str | None,
+        user_id: str | None,
+    ) -> None:
+        """Specialized handler for task creation with associations."""
+        from datetime import UTC, datetime
+
+        from app.utils.transformers import to_hubspot_timestamp
+
+        # 1. Handle Due Date
+        if "hs_task_due_date" in properties:
+            date_str = properties.pop("hs_task_due_date")
+            try:
+                dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=UTC)
+                properties["hs_timestamp"] = str(to_hubspot_timestamp(dt))
+            except ValueError:
+                pass
+
+        if "hs_timestamp" not in properties:
+            properties["hs_timestamp"] = str(to_hubspot_timestamp(datetime.now(UTC)))
+
+        # 2. Map Priority Emojis (if necessary, though we just store the value)
+        # 3. Create Task
+        hubspot_client = await self.hubspot.get_client(integration.workspace_id)
+        task = await hubspot_client.create_object("tasks", properties)
+        task_id = task["id"]
+
+        # 4. Handle Association
+        if association:
+            assoc_type, assoc_id = association.split(":")
+            await self.hubspot.associate_object(
+                workspace_id=integration.workspace_id,
+                from_type="task",
+                from_id=task_id,
+                to_type=assoc_type,
+                to_id=assoc_id,
+            )
+
+    async def _handle_ticket_submission(
+        self,
+        integration: Any,
+        properties: dict[str, Any],
+        association: str | None,
+        channel_service: ChannelService,
+        user_id: str,
+    ) -> None:
+        """Handles complex ticket creation, channel
+        provisioning, and Slack onboarding.
+        """
+        try:
+            hubspot_client = await self.hubspot.get_client(integration.workspace_id)
+
+            # 1. Create Ticket in HubSpot
+            # HubSpot requires hs_pipeline and hs_pipeline_stage usually.
+            # If they are missing, HubSpotService might handle it or API will error.
+            ticket = await hubspot_client.create_object("tickets", properties)
+            ticket_id = ticket["id"]
+            subject = properties.get("subject", "Support Ticket")
+
+            self.log.info("Created HubSpot ticket: %s", ticket_id)
+
+            # 2. Handle Association
+            if association:
+                assoc_type, assoc_id = association.split(":")
+                await self.hubspot.associate_object(
+                    workspace_id=integration.workspace_id,
+                    from_type="ticket",
+                    from_id=ticket_id,
+                    to_type=assoc_type,
+                    to_id=assoc_id,
+                )
+
+            # 3. Provision Slack Channel
+            channel_inst = await channel_service.get_slack_channel()
+            slack_client = channel_inst.get_slack_client()
+
+            # Clean name for Slack (lowercase, alphanum, hyphens, max 80 chars)
+            raw_name = f"ticket-{ticket_id}-{subject.lower()}"
+            channel_name = re.sub(r"[^a-z0-9-]", "-", raw_name)[:80].strip("-")
+
+            # Create private channel
+            create_resp = await slack_client.conversations_create(
+                name=channel_name, is_private=True
+            )
+
+            if not create_resp.get("ok"):
+                self.log.error(
+                    "Failed to create Slack channel: %s", create_resp.get("error")
+                )
+                # Fallback: post to the original channel or user DM if creation fails
+                await slack_client.chat_postMessage(
+                    channel=user_id,
+                    text=(
+                        f"✅ Created HubSpot ticket #{ticket_id},"
+                        " but failed to create a private"
+                        f" channel: `{create_resp.get('error')}`"
+                    ),
+                )
+                return
+
+            new_channel_id = create_resp["channel"]["id"]
+            self.log.info("Provisioned Slack channel: %s", new_channel_id)
+
+            # 4. Invite Reporter
+            await slack_client.conversations_invite(
+                channel=new_channel_id, users=[user_id]
+            )
+
+            # 5. Post Control Panel
+            builder = ModalBuilder()
+            control_panel_blocks = builder.build_ticket_control_panel(
+                ticket_id, subject
+            )
+
+            await slack_client.chat_postMessage(
+                channel=new_channel_id,
+                text=f"🎫 Ticket #{ticket_id} created!",
+                blocks=control_panel_blocks,
+            )
+
+            # 6. Ephemeral Confirmation
+            success_msg = (
+                f"✅ Ticket created! Join your support channel: <#{new_channel_id}>"
+            )
+            await slack_client.chat_postMessage(channel=user_id, text=success_msg)
+
+        except Exception as exc:
+            self.log.error("Ticket submission failed: %s", exc, exc_info=True)
+            if user_id:
+                try:
+                    client = AsyncWebClient(
+                        token=integration.credentials.get("slack_bot_token")
+                    )
+                    await client.chat_postMessage(
+                        channel=user_id, text=f"❌ Failed to create ticket: {str(exc)}"
+                    )
+                except Exception:
+                    pass
+
+    async def _handle_ticket_action(
+        self,
+        action_id: str,
+        payload: Mapping[str, Any],
+        integration: Any,
+        channel_service: ChannelService,
+    ) -> None:
+        """Dispatcher for ticket Control Panel button actions."""
+        actions = payload.get("actions", [])
+        if not actions:
+            return
+
+        action = actions[0]
+        ticket_id = action.get("value")
+        if not ticket_id:
+            return
+
+        user_id = str(payload.get("user", {}).get("id") or "")
+        channel_id = str(payload.get("channel", {}).get("id") or "")
+
+        if not user_id or not channel_id:
+            return
+
+        if action_id == "ticket_claim":
+            await self._handle_ticket_claim(
+                ticket_id, user_id, channel_id, integration, channel_service, payload
+            )
+        elif action_id == "ticket_close":
+            await self._handle_ticket_close(
+                ticket_id, user_id, channel_id, integration, channel_service
+            )
+        elif action_id == "ticket_delete":
+            await self._handle_ticket_delete(
+                ticket_id, user_id, channel_id, integration, channel_service
+            )
+        elif action_id == "ticket_transcript":
+            await self._handle_ticket_transcript(
+                ticket_id, user_id, channel_id, integration, channel_service, payload
+            )
+
+    async def _handle_ticket_claim(
+        self,
+        ticket_id: str,
+        user_id: str,
+        channel_id: str,
+        integration: Any,
+        channel_service: ChannelService,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Assigns the HubSpot ticket to the claiming Slack user."""
+        try:
+            # 1. Resolve HubSpot Owner
+            slack_channel = await channel_service.get_slack_channel()
+            slack_client = slack_channel.get_slack_client()
+            user_info = await slack_client.users_info(user=user_id)
+
+            email = user_info.get("user", {}).get("profile", {}).get("email")
+            if not email:
+                raise HubSpotAPIError("Could not resolve email for Slack user.")
+
+            owners = await self.hubspot.get_owners(integration.workspace_id)
+            hs_owner = next((o for o in owners if o.get("email") == email), None)
+
+            if not hs_owner:
+                raise HubSpotAPIError(f"No HubSpot owner found for email {email}")
+
+            # 2. Update HubSpot Ticket
+            hubspot_client = await self.hubspot.get_client(integration.workspace_id)
+            await hubspot_client.request(
+                "PATCH",
+                f"objects/tickets/{ticket_id}",
+                json={"properties": {"hubspot_owner_id": hs_owner["id"]}},
+            )
+
+            # 3. Notify in channel
+            await slack_client.chat_postMessage(
+                channel=channel_id, text=f"🙋‍♂️ <@{user_id}> has claimed this ticket."
+            )
+
+        except Exception as exc:
+            self.log.error("Failed to claim ticket %s: %s", ticket_id, exc)
+            response_url = payload.get("response_url")
+            if response_url:
+                await channel_service.send_via_response_url(
+                    response_url=str(response_url),
+                    text=f"❌ Failed to claim ticket: {str(exc)}",
+                )
+
+    async def _handle_ticket_close(
+        self,
+        ticket_id: str,
+        user_id: str,
+        channel_id: str,
+        integration: Any,
+        channel_service: ChannelService,
+    ) -> None:
+        """Closes the HubSpot ticket and archives the Slack channel."""
+        try:
+            # 1. Update HubSpot Ticket
+            # (Status mapping might vary, using 'CLOSED' as placeholder)
+            hubspot_client = await self.hubspot.get_client(integration.workspace_id)
+            await hubspot_client.request(
+                "PATCH",
+                f"objects/tickets/{ticket_id}",
+                json={
+                    "properties": {"hs_pipeline_stage": "4"}
+                },  # Placeholder for 'Closed'
+            )
+
+            # 2. Notify and Archive
+            slack_channel = await channel_service.get_slack_channel()
+            slack_client = slack_channel.get_slack_client()
+
+            await slack_client.chat_postMessage(
+                channel=channel_id,
+                text=f"🔒 Ticket closed by <@{user_id}>. Archiving channel...",
+            )
+
+            await slack_client.conversations_archive(channel=channel_id)
+
+        except Exception as exc:
+            self.log.error("Failed to close ticket %s: %s", ticket_id, exc)
+
+    async def _handle_ticket_delete(
+        self,
+        ticket_id: str,
+        user_id: str,
+        channel_id: str,
+        integration: Any,
+        channel_service: ChannelService,
+    ) -> None:
+        """Deletes the Slack channel (permanent archive)."""
+        try:
+            slack_channel = await channel_service.get_slack_channel()
+            slack_client = slack_channel.get_slack_client()
+
+            await slack_client.chat_postMessage(
+                channel=channel_id,
+                text=f"🗑️ Ticket channel permanently removed by <@{user_id}>.",
+            )
+            await slack_client.conversations_archive(channel=channel_id)
+
+        except Exception as exc:
+            self.log.error("Failed to delete ticket channel %s: %s", ticket_id, exc)
+
+    async def _handle_ticket_transcript(
+        self,
+        ticket_id: str,
+        user_id: str,
+        channel_id: str,
+        integration: Any,
+        channel_service: ChannelService,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Placeholder for generating a conversation transcript."""
+        # In a real implementation, this would fetch
+        # conversations.replies and generate a PDF/Txt
+        response_url = payload.get("response_url")
+        if response_url:
+            await channel_service.send_via_response_url(
+                response_url=str(response_url),
+                text="📄 Transcript generation is coming soon!",
+            )

@@ -75,7 +75,7 @@ def coerce_to_str_dict(
     return result
 
 
-def to_int(value) -> int | None:
+def to_int(value: Any) -> int | None:
     """Convert value to int, returning None on failure."""
     try:
         return int(value)
@@ -113,3 +113,54 @@ def validate_supabase_row(
         raise ValueError(f"Missing required fields: {missing}")
 
     log.debug("Supabase row validated successfully")
+
+
+def parse_hs_task_command(text: str) -> dict[str, Any]:
+    """Description:
+        Parses advanced parameters from /hs-task command text.
+        Supports:
+        - Mentions: <@U12345> -> extract user_id
+        - Due dates: today, tomorrow, next week
+        - Task name: remaining text
+
+    Args:
+        text (str): The raw command text.
+
+    Returns:
+        dict[str, Any]: Parsed components (subject, mention, due_date).
+
+    """
+    import re
+    from datetime import UTC, datetime, timedelta
+
+    result: dict[str, Any] = {
+        "subject": text,
+        "slack_user_id": None,
+        "due_date": None,
+    }
+
+    # 1. Extract Slack Mention (@user)
+    mention_match = re.search(r"<@([A-Z0-9]+)>", text)
+    if mention_match:
+        result["slack_user_id"] = mention_match.group(1)
+        text = text.replace(mention_match.group(0), "").strip()
+
+    # 2. Extract Relative Due Dates
+    now = datetime.now(UTC)
+    date_patterns = {
+        r"\btoday\b": now,
+        r"\btomorrow\b": now + timedelta(days=1),
+        r"\bnext week\b": now + timedelta(weeks=1),
+    }
+
+    for pattern, dt in date_patterns.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            result["due_date"] = dt
+            text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+            break
+
+    # 3. Clean up subject
+    # Remove extra spaces caused by parameter extraction
+    result["subject"] = re.sub(r"\s+", " ", text).strip()
+
+    return result

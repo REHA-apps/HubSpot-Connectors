@@ -42,7 +42,7 @@ class CardBuilder:
             dict: A Slack modal payload containing the rendered card blocks.
 
         """
-        from app.connectors.slack.renderer import SlackRenderer  # noqa: PLC0415
+        from app.connectors.slack.renderer import SlackRenderer
 
         renderer = SlackRenderer()
         payload = renderer.render(card)
@@ -142,18 +142,38 @@ class CardBuilder:
         name = f"{props.get('firstname', '')} {props.get('lastname', '')}".strip()
         email = props.get("email", "unknown@example.com")
 
-        return UnifiedCard(
-            title=name or email,
-            subtitle="Contact",
-            emoji="👤",
-            badge="FREE VERSION" if not is_pro else "PRO TIER",
-            metrics=[
-                ("Email", str(props.get("email") or "N/A")),
-                ("Phone", str(props.get("phone") or "N/A")),
-                ("Mobile", str(props.get("mobilephone") or "N/A")),
+        job_title = props.get("jobtitle")
+        subtitle = f"Contact | {job_title}" if job_title else "Contact"
+
+        phone = str(props.get("phone") or "")
+        mobile = str(props.get("mobilephone") or "")
+
+        metrics = [
+            ("Email", str(props.get("email") or "N/A")),
+        ]
+        if phone:
+            metrics.append(("Phone", f"tel:{phone}"))
+        else:
+            metrics.append(("Phone", "N/A"))
+
+        if mobile:
+            metrics.append(("Mobile", f"tel:{mobile}"))
+        else:
+            metrics.append(("Mobile", "N/A"))
+
+        metrics.extend(
+            [
                 ("Lifecycle", str(props.get("lifecyclestage") or "N/A")),
                 ("Score", str(analysis.score)),
-            ],
+            ]
+        )
+
+        return UnifiedCard(
+            title=name or email,
+            subtitle=subtitle,
+            emoji="👤",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
+            metrics=metrics,
             content=analysis.insight,
             secondary_content=[
                 ("Next Best Action", analysis.next_best_action),
@@ -196,18 +216,7 @@ class CardBuilder:
     def build_lead(
         self, obj: Mapping[str, Any], analysis: AIContactAnalysis, is_pro: bool = False
     ) -> UnifiedCard:
-        """Builds a UnifiedCard representation for a HubSpot Lead.
-
-        Args:
-            obj (Mapping[str, Any]): Raw HubSpot lead object.
-            analysis (AIContactAnalysis): Pre-calculated AI insights and scores.
-            is_pro (bool, optional): Whether the workspace is in the PRO tier.
-                Defaults to False.
-
-        Returns:
-            UnifiedCard: The rendered IR for Slack or other platforms.
-
-        """
+        """Builds a UnifiedCard representation for a HubSpot Lead."""
         props = obj["properties"]
         name = f"{props.get('firstname', '')} {props.get('lastname', '')}".strip()
         email = props.get("email", "unknown@example.com")
@@ -219,6 +228,8 @@ class CardBuilder:
             badge="FREE VERSION" if not is_pro else "PRO TIER",
             metrics=[
                 ("Email", email),
+                ("Status", str(props.get("hs_lead_status") or "N/A")),
+                ("Source", str(props.get("hs_analytics_source") or "N/A")),
                 ("Score", str(analysis.score)),
             ],
             content=analysis.insight,
@@ -274,7 +285,12 @@ class CardBuilder:
             emoji="🏢",
             badge="FREE VERSION" if not is_pro else "PRO TIER",
             metrics=[
-                ("Domain", str(props.get("domain") or "N/A")),
+                (
+                    "Domain",
+                    f"http://{props.get('domain')}" if props.get("domain") else "N/A",
+                ),
+                ("Industry", str(props.get("industry") or "N/A")),
+                ("Size", str(props.get("numberofemployees") or "N/A")),
                 ("Page Views", str(props.get("hs_analytics_num_page_views") or "0")),
                 ("Sessions", str(props.get("hs_analytics_num_visits") or "0")),
                 ("Health", analysis.health),
@@ -321,20 +337,7 @@ class CardBuilder:
         pipelines: list[dict[str, Any]] | None = None,
         is_pro: bool = False,
     ) -> UnifiedCard:
-        """Builds a UnifiedCard representation for a HubSpot Deal.
-
-        Args:
-            obj (Mapping[str, Any]): Raw HubSpot deal object.
-            analysis (AIDealAnalysis): Pre-calculated deal insights and risk assessment.
-            pipelines (list[dict[str, Any]] | None, optional): All deal
-                pipelines/stages. Defaults to None.
-            is_pro (bool, optional): Whether the workspace is in the PRO tier.
-                Defaults to False.
-
-        Returns:
-            UnifiedCard: The rendered IR for Slack or other platforms.
-
-        """
+        """Builds a UnifiedCard representation for a HubSpot Deal."""
         props = obj["properties"]
         name = props.get("dealname", "Unnamed Deal")
         current_stage_id = props.get("dealstage")
@@ -346,23 +349,36 @@ class CardBuilder:
         stage_options = []
 
         if pipelines and pipeline_id:
-            # Find the correct pipeline
             pipeline = next((p for p in pipelines if p["id"] == pipeline_id), None)
             if pipeline:
                 pipeline_label = pipeline.get("label", pipeline_id)
-                # Build options from stages
                 for stage in pipeline.get("stages", []):
                     label = stage["label"]
-                    # Truncate label to 75 chars for Slack
-                    if len(label) > 75:  # noqa: PLR2004
+                    if len(label) > 72:  # noqa: PLR2004
                         label = label[:72] + "..."
                     stage_id = stage["id"]
                     stage_options.append((label, stage_id))
                     if stage_id == current_stage_id:
                         stage_label = label
         elif current_stage_id:
-            # Fallback if no pipeline data available
-            stage_label = current_stage_id
+            stage_label = str(current_stage_id)
+
+        # Map emojis to stages
+        stage_emojis = {
+            "appointmentscheduled": "📅",
+            "qualifiedtobuy": "✅",
+            "presentationscheduled": "🖥️",
+            "decisionmakerboughtin": "🤝",
+            "contractsent": "📝",
+            "closedwon": "🟢",
+            "closedlost": "🔴",
+            "discovery": "🔍",
+            "negotiation": "🟡",
+        }
+        emoji_prefix = stage_emojis.get(stage_label.lower().replace(" ", ""), "🔹")
+        display_stage = f"{emoji_prefix} {stage_label}"
+
+        amount = props.get("amount") or 0
 
         actions = [
             CardAction(
@@ -378,7 +394,6 @@ class CardBuilder:
             ),
         ]
 
-        # Add stage selector if we have options
         if stage_options:
             actions.insert(
                 0,
@@ -387,55 +402,49 @@ class CardBuilder:
                     action_type="select",
                     value=f"update_deal_stage:{obj['id']}",
                     options=stage_options,
-                    # selected_option=current_stage_id,
-                    # User wants placeholder "Update Stage" to show
                 ),
             )
 
-        # Pro-only buttons
         if is_pro:
-            actions.append(
-                CardAction(
-                    label="Update Lead Type",
-                    action_type="modal",
-                    value=f"update_lead_type:{obj['id']}",
-                )
-            )
-            actions.append(
-                CardAction(
-                    label="Calculator",
-                    action_type="modal",
-                    value=f"open_calculator:{obj['id']}",
-                )
-            )
-            actions.append(
-                CardAction(
-                    label="Reassign Owner",
-                    action_type="modal",
-                    value=f"reassign_owner:deal:{obj['id']}",
-                )
-            )
-            actions.append(
-                CardAction(
-                    label="Schedule Meeting",
-                    action_type="modal",
-                    value=f"schedule_meeting:{obj['id']}",
-                )
+            actions.extend(
+                [
+                    CardAction(
+                        label="Update Lead Type",
+                        action_type="modal",
+                        value=f"update_lead_type:{obj['id']}",
+                    ),
+                    CardAction(
+                        label="Calculator",
+                        action_type="modal",
+                        value=f"open_calculator:{obj['id']}",
+                    ),
+                    CardAction(
+                        label="Reassign Owner",
+                        action_type="modal",
+                        value=f"reassign_owner:deal:{obj['id']}",
+                    ),
+                    CardAction(
+                        label="Schedule Meeting",
+                        action_type="modal",
+                        value=f"schedule_meeting:{obj['id']}",
+                    ),
+                ]
             )
 
         return UnifiedCard(
             title=name,
-            subtitle=f"Deal • Stage: {stage_label}",
+            subtitle="Deal",
             emoji="💰",
             badge="FREE VERSION" if not is_pro else "PRO TIER",
             metrics=[
                 ("Pipeline", pipeline_label),
-                ("Amount", str(props.get("amount") or "N/A")),
-                ("Risk", analysis.risk),
+                ("Stage", display_stage),
+                ("Amount", f"${float(amount):,.2f}"),
+                ("Risk", str(getattr(analysis, "risk_score", "N/A"))),
             ],
-            content=analysis.summary,
+            content=getattr(analysis, "summary", "No summary available."),
             secondary_content=[
-                ("Next Action", analysis.next_action),
+                ("Next Action", getattr(analysis, "next_action", "N/A")),
             ],
             actions=actions,
         )
@@ -1362,7 +1371,7 @@ class ModalBuilder:
             "close": {"type": "plain_text", "text": "Cancel"},
         }
 
-    def build_creation_modal(  # noqa: PLR0912
+    def build_creation_modal(  # noqa: PLR0912, PLR0915
         self,
         object_type: str,
         callback_id: str,
@@ -1413,14 +1422,60 @@ class ModalBuilder:
             blocks.append(self._datepicker("Close Date", "closedate"))
 
             if owners:
-                owner_options = [
-                    (o["email"], o["id"]) for o in owners[:100]
-                ]  # Limit 100
+                owner_options = [(o["email"], o["id"]) for o in owners[:100]]
                 blocks.append(
                     self._select(
                         "Deal Owner", "hubspot_owner_id", owner_options, optional=True
                     )
                 )
+
+        # --- Lead Fields ---
+        elif object_type == "lead":
+            blocks.extend(
+                [
+                    self._input("First Name", "firstname"),
+                    self._input("Last Name", "lastname"),
+                    self._input("Email", "email", placeholder="lead@example.com"),
+                    self._select(
+                        "Lead Source",
+                        "hs_analytics_source",
+                        [
+                            ("Website", "DIRECT_TRAFFIC"),
+                            ("LinkedIn", "SOCIAL_MEDIA"),
+                            ("Referral", "REFERRALS"),
+                            ("Other", "OTHER"),
+                        ],
+                        optional=True,
+                    ),
+                    self._select(
+                        "Lead Status",
+                        "hs_lead_status",
+                        [
+                            ("New", "NEW"),
+                            ("Contacted", "OPEN"),
+                            ("Qualified", "IN_PROGRESS"),
+                            ("Unqualified", "UNQUALIFIED"),
+                        ],
+                        optional=True,
+                    ),
+                ]
+            )
+
+        # --- Company Fields ---
+        elif object_type == "company":
+            blocks.extend(
+                [
+                    self._input("Company Name", "name"),
+                    self._input("Domain", "domain", placeholder="example.com"),
+                    self._input("Industry", "industry", optional=True),
+                    self._input(
+                        "Company Size",
+                        "numberofemployees",
+                        placeholder="e.g. 500",
+                        optional=True,
+                    ),
+                ]
+            )
 
         # --- Task Fields ---
         elif object_type == "task":
@@ -1437,19 +1492,41 @@ class ModalBuilder:
                 )
             )
             blocks.append(
-                self._datepicker("Due Date", "hs_task_due_date")
-            )  # Note: API expects timestamp
-            blocks.append(
                 self._select(
                     "Priority",
                     "hs_task_priority",
                     [
-                        ("High", "HIGH"),
-                        ("Medium", "MEDIUM"),
-                        ("Low", "LOW"),
+                        ("🔴 High", "HIGH"),
+                        ("🟡 Medium", "MEDIUM"),
+                        ("🔵 Low", "LOW"),
                     ],
                     initial_option="MEDIUM",
                 )
+            )
+            blocks.append(self._datepicker("Due Date", "hs_task_due_date"))
+            blocks.append(
+                self._input(
+                    "Description", "hs_task_body", multiline=True, optional=True
+                )
+            )
+
+            # Killer Feature: Association Dropdown (External Select)
+            blocks.append(
+                {
+                    "type": "input",
+                    "block_id": "block_association",
+                    "element": {
+                        "type": "external_select",
+                        "action_id": "association_search",
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Link to Contact, Deal, or Company...",
+                        },
+                        "min_query_length": 3,
+                    },
+                    "label": {"type": "plain_text", "text": "Associate with Record"},
+                    "optional": True,
+                }
             )
 
             if owners:
@@ -1462,24 +1539,69 @@ class ModalBuilder:
 
         # --- Ticket Fields ---
         elif object_type == "ticket":
-            blocks.append(self._input("Ticket Name", "subject"))
+            blocks.append(
+                self._input(
+                    "Ticket Subject",
+                    "subject",
+                    placeholder="Short summary of the issue",
+                )
+            )
+            blocks.append(
+                self._input(
+                    "Description",
+                    "content",
+                    placeholder="Describe your problem in detail...",
+                    multiline=True,
+                )
+            )
             blocks.append(
                 self._select(
-                    "Priority",
+                    "Category",
+                    "hs_ticket_category",
+                    [
+                        ("Billing", "BILLING"),
+                        ("Technical Support", "TECH_SUPPORT"),
+                        ("Report a Player/User", "REPORT_USER"),
+                    ],
+                )
+            )
+            blocks.append(
+                self._select(
+                    "Priority Level",
                     "hs_ticket_priority",
                     [
-                        ("High", "HIGH"),
-                        ("Medium", "MEDIUM"),
-                        ("Low", "LOW"),
+                        ("🔴 High", "HIGH"),
+                        ("🟡 Medium", "MEDIUM"),
+                        ("🔵 Low", "LOW"),
                     ],
                     initial_option="MEDIUM",
                 )
+            )
+
+            # Association (optional)
+            blocks.append(
+                {
+                    "type": "input",
+                    "block_id": "block_association",
+                    "element": {
+                        "type": "external_select",
+                        "action_id": "association_search",
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Link to Contact, Deal, or Company...",
+                        },
+                        "min_query_length": 3,
+                    },
+                    "label": {"type": "plain_text", "text": "Associate with Record"},
+                    "optional": True,
+                }
             )
 
             if pipelines:
                 pipeline_options = [(p["label"], p["id"]) for p in pipelines]
                 blocks.append(self._select("Pipeline", "hs_pipeline", pipeline_options))
 
+                # Default to first pipeline's stages if available
                 stages = pipelines[0].get("stages", [])
                 stage_options = [(s["label"], s["id"]) for s in stages]
                 if stage_options:
@@ -1488,11 +1610,33 @@ class ModalBuilder:
                             "Ticket Status", "hs_pipeline_stage", stage_options
                         )
                     )
-            else:
-                blocks.append(self._input("Pipeline ID", "hs_pipeline", optional=True))
-                blocks.append(
-                    self._input("Ticket Status ID", "hs_pipeline_stage", optional=True)
+
+            blocks.append(
+                self._select(
+                    "Source",
+                    "source_type",
+                    [
+                        ("Chat", "CHAT"),
+                        ("Email", "EMAIL"),
+                        ("Form", "FORM"),
+                    ],
+                    initial_option="CHAT",
                 )
+            )
+
+            if pipelines:
+                pipeline_options = [(p["label"], p["id"]) for p in pipelines]
+                blocks.append(self._select("Pipeline", "hs_pipeline", pipeline_options))
+
+                # Default to first pipeline's stages if available
+                stages = pipelines[0].get("stages", [])
+                stage_options = [(s["label"], s["id"]) for s in stages]
+                if stage_options:
+                    blocks.append(
+                        self._select(
+                            "Ticket Status", "hs_pipeline_stage", stage_options
+                        )
+                    )
 
             blocks.append(
                 self._select(
@@ -1607,3 +1751,82 @@ class ModalBuilder:
             "label": {"type": "plain_text", "text": label},
             "optional": optional,
         }
+
+    def build_ticket_control_panel(
+        self, ticket_id: str, subject: str
+    ) -> list[dict[str, Any]]:
+        """Constructs the Control Panel message for a new ticket channel."""
+        return [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"🎫 *Ticket Control Panel*"
+                        f"\n*ID:* {ticket_id}"
+                        f"\n*Subject:* {subject}"
+                        "\n\nUse the buttons below"
+                        " to manage this ticket."
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "actions",
+                "block_id": f"ticket_actions:{ticket_id}",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Close 🔒"},
+                        "style": "primary",
+                        "action_id": "ticket_close",
+                        "value": ticket_id,
+                        "confirm": {
+                            "title": {"type": "plain_text", "text": "Are you sure?"},
+                            "text": {
+                                "type": "plain_text",
+                                "text": (
+                                    "This will close the ticket"
+                                    " in HubSpot and archive"
+                                    " this channel."
+                                ),
+                            },
+                            "confirm": {"type": "plain_text", "text": "Close Ticket"},
+                            "deny": {"type": "plain_text", "text": "Cancel"},
+                        },
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Claim 🙋‍♂️"},
+                        "action_id": "ticket_claim",
+                        "value": ticket_id,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Transcript 📄"},
+                        "action_id": "ticket_transcript",
+                        "value": ticket_id,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Delete 🗑️"},
+                        "style": "danger",
+                        "action_id": "ticket_delete",
+                        "value": ticket_id,
+                        "confirm": {
+                            "title": {"type": "plain_text", "text": "Permanent Action"},
+                            "text": {
+                                "type": "plain_text",
+                                "text": (
+                                    "This will permanently"
+                                    " archive the channel."
+                                    " Are you sure?"
+                                ),
+                            },
+                            "confirm": {"type": "plain_text", "text": "Delete Channel"},
+                            "deny": {"type": "plain_text", "text": "Cancel"},
+                        },
+                    },
+                ],
+            },
+        ]

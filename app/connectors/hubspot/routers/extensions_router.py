@@ -91,7 +91,7 @@ async def get_slack_activity(
         }
 
     # 4. Fetch Replies from Slack
-    slack_channel = await channel_service._get_slack_channel()
+    slack_channel = await channel_service.get_slack_channel()
     replies = await slack_channel.get_thread_replies(
         channel_id=mapping.channel_id,
         thread_ts=mapping.thread_ts,

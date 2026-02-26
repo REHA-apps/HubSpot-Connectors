@@ -4,6 +4,12 @@ services:
     env_file:
       - .env
     restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
   nginx:
     image: nginx:alpine
@@ -13,5 +19,6 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./logs/nginx:/var/log/nginx
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     restart: always

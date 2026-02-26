@@ -21,7 +21,7 @@ logger = get_logger("hubspot.oauth")
 async def hubspot_oauth_callback(
     request: Request,
     code: str = Query(...),
-    state: str = Query(...),
+    state: str | None = Query(default=None),
     corr_id: str = Depends(get_corr_id),
     integration_service: IntegrationService = Depends(get_integration_service),
 ) -> Any:

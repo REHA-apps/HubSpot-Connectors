@@ -84,13 +84,16 @@ class BaseClient:
             - Uses exponential backoff with jitter.
 
         """
-        url = f"{self.base_url}/{path.lstrip('/')}"
+        if path.startswith("http"):
+            url = path
+        else:
+            url = f"{self.base_url}/{path.lstrip('/')}"
         client = self.get_client()
         retry_after = None
         max_retries = 4
 
         for attempt in range(max_retries + 1):
-            self.log.info("HTTP %s %s (attempt %s)", method, url, attempt)
+            self.log.debug("HTTP %s %s (attempt %s)", method, url, attempt)
 
             try:
                 response = await client.request(
@@ -112,7 +115,7 @@ class BaseClient:
                     self.log.error("Invalid JSON response from %s", url)
                     raise
 
-                self.log.info("HTTP %s %s succeeded", method, url)
+                self.log.debug("HTTP %s %s succeeded", method, url)
                 return payload
 
             except httpx.HTTPStatusError as exc:
@@ -127,6 +130,7 @@ class BaseClient:
                 )
 
                 if is_retryable:
+                    retry_after = exc.response.headers.get("Retry-After")
                     if retry_after:
                         delay = float(retry_after)
                         self.log.warning(
@@ -194,9 +198,3 @@ class BaseClient:
     ) -> dict[str, Any]:
         """Convenience method for POST requests."""
         return await self.request("POST", path, json=json, data=data)
-
-    async def _retry_delay(self, attempt: int) -> None:
-        # Exponential backoff: 0.5, 1, 2, 4 seconds
-        base = 0.5 * (2**attempt)
-        jitter = base * random.uniform(0.8, 1.2)
-        await asyncio.sleep(jitter)

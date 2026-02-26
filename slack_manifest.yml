@@ -25,6 +25,10 @@ settings:
     is_enabled: true
     request_url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/interactions
 features:
+  unfurl_domains:
+    - hubspot.com
+    - app.hubspot.com
+    - app-eu1.hubspot.com
   bot_user:
     display_name: REHA Bot
     always_online: true

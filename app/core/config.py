@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # HubSpot settings
     HUBSPOT_CLIENT_ID: str = Field(default="")
     HUBSPOT_CLIENT_SECRET: SecretStr = Field(default=SecretStr(""))
+    HUBSPOT_APP_ID: str = Field(default="")
     HUBSPOT_REDIRECT_URI: HttpUrl = Field(default=HttpUrl("http://localhost"))
 
     # Slack settings
@@ -68,6 +69,7 @@ class Settings(BaseSettings):
             "conversations.read "
             "conversations.write "
             "tickets "
+            "automation "
             "oauth"
         ),
         repr=False,

@@ -105,6 +105,15 @@ class StorageService:
             provider,
         )
 
+        # Preemptive check for HubSpot: If the provided
+        # workspace_id is strictly numeric,
+        # it is a HubSpot portal_id instead of our internal workspace_id.
+        if provider == Provider.HUBSPOT and workspace_id.isdigit():
+            self.log.info(
+                "Numeric ID detected, using portal_id lookup for %s", workspace_id
+            )
+            return await self.get_integration_by_portal_id(portal_id=workspace_id)
+
         cache_key = f"integ:{workspace_id}:{provider}"
 
         async def fetch():
@@ -112,7 +121,9 @@ class StorageService:
                 {"workspace_id": workspace_id, "provider": provider}
             )
 
-        return await _record_cache.get_or_fetch(cache_key, fetch)
+        row = await _record_cache.get_or_fetch(cache_key, fetch)
+
+        return row
 
     async def list_integrations(
         self,

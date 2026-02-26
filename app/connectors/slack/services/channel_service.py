@@ -4,6 +4,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from slack_sdk.errors import SlackApiError
+
 from app.connectors.slack.channel import SlackChannel
 from app.connectors.slack.renderer import SlackRenderer
 from app.connectors.slack.ui import CardBuilder
@@ -51,7 +53,7 @@ class ChannelService(BaseChannelService):
         self.slack_renderer = SlackRenderer()
 
     # Connector management
-    async def _get_slack_channel(self) -> SlackChannel:
+    async def get_slack_channel(self) -> SlackChannel:
         if not self.slack_integration:
             raise IntegrationNotFoundError(
                 "Slack integration not configured for this workspace"
@@ -74,9 +76,18 @@ class ChannelService(BaseChannelService):
         if self.slack_integration and self.slack_integration.metadata.get("channel_id"):
             return str(self.slack_integration.metadata["channel_id"])
 
-        return await self.integration_service.resolve_default_channel(
-            workspace_id=workspace_id,
-        )
+        try:
+            return await self.integration_service.resolve_default_channel(
+                workspace_id=workspace_id,
+            )
+        except IntegrationNotFoundError:
+            # Fall back to dynamically fetching the actual
+            # default channel from Slack API
+            client = await self.get_slack_channel()
+            default_id = await client.get_default_channel_id()
+            if default_id:
+                return default_id
+            raise
 
     # Rich message rendering
     async def send_card(
@@ -131,7 +142,7 @@ class ChannelService(BaseChannelService):
         thread_ts: str | None = None,
     ) -> Mapping[str, Any] | None:
         """Dispatches a generic message or Block Kit payload to Slack."""
-        channel_inst = await self._get_slack_channel()
+        channel_inst = await self.get_slack_channel()
         try:
             channel = await self._resolve_channel(workspace_id, channel)
         except IntegrationNotFoundError:
@@ -161,7 +172,7 @@ class ChannelService(BaseChannelService):
 
         # noqa: E501
         """
-        channel = await self._get_slack_channel()
+        channel = await self.get_slack_channel()
         return await channel.send_via_response_url(
             response_url=response_url,
             text=text,
@@ -170,14 +181,37 @@ class ChannelService(BaseChannelService):
         )
 
     # Specialized AI rendering
-    async def send_slack_ai_insights(self, *, workspace_id, channel, analysis):
+    async def send_slack_ai_insights(
+        self, *, workspace_id, channel, user_email: str | None = None, analysis
+    ):
         unified_card = self.cards.build_ai_insights(analysis)
         rendered = self.slack_renderer.render(unified_card)
-        await self.send_message(
+
+        # Try sending to the defined channel (or fallback to workspace default)
+        result = await self.send_message(
             workspace_id=workspace_id,
             channel=channel,
             blocks=rendered["blocks"],
         )
+
+        # If sending failed (e.g., no default channel resolved)
+        # and we have their email, DM them
+        if not result and user_email:
+            logger.info(
+                "Primary channel delivery failed, attempting to DM user %s.", user_email
+            )
+            channel_inst = await self.get_slack_channel()
+            slack_user_id = await channel_inst.get_user_by_email(user_email)
+            if slack_user_id:
+                await channel_inst.send_dm(
+                    user_id=slack_user_id,
+                    text="Your HubSpot AI Insights",
+                    blocks=rendered["blocks"],
+                )
+            else:
+                logger.warning(
+                    "Could not resolve Slack user ID for email %s.", user_email
+                )
 
     async def send_slack_next_best_action(self, *, workspace_id, channel, analysis):
         unified_card = self.cards.build_ai_next_best_action(analysis)
@@ -237,7 +271,7 @@ class ChannelService(BaseChannelService):
         user_id: str = "",
     ) -> None:
         """Coordinates HubSpot search and sends the best possible Slack result."""
-        slack_channel = await self._get_slack_channel()
+        slack_channel = await self.get_slack_channel()
 
         # Build a context header showing who triggered the search
         context_blocks: list[dict[str, Any]] = []
@@ -329,7 +363,7 @@ class ChannelService(BaseChannelService):
         """Handles Slack link_shared event by unfurling HubSpot URLs."""
         try:
             pattern = re.compile(
-                r"https://app\.hubspot\.com/contacts/\d+/(contact|deal|company)/(\d+)/?"
+                r"https://app(?:-[a-z0-9]+)?\.hubspot\.com/contacts/\d+/(?:record/)?([^/?#]+)/(\d+)"
             )
 
             unfurls = {}
@@ -340,7 +374,7 @@ class ChannelService(BaseChannelService):
                 if not match:
                     continue
 
-                obj_type = match.group(1)
+                obj_type = normalize_object_type(match.group(1))
                 obj_id = match.group(2)
 
                 # 1. Fetch HubSpot object
@@ -363,13 +397,35 @@ class ChannelService(BaseChannelService):
 
             if unfurls:
                 # 5. Call chat.unfurl
-                slack_channel_inst = await self._get_slack_channel()
-                await slack_channel_inst.chat_unfurl(
-                    channel=channel,
-                    ts=ts,
-                    unfurls=unfurls,
-                )
-                logger.info("Sent %d unfurls to channel=%s", len(unfurls), channel)
+                slack_channel_inst = await self.get_slack_channel()
+                try:
+                    await slack_channel_inst.chat_unfurl(
+                        channel=channel,
+                        ts=ts,
+                        unfurls=unfurls,
+                    )
+                    logger.info("Sent %d unfurls to channel=%s", len(unfurls), channel)
+                except SlackApiError as exc:
+                    if exc.response.get("error") == "cannot_unfurl_url":
+                        logger.warning(
+                            "Slack chat.unfurl failed"
+                            " (cannot_unfurl_url)."
+                            " Falling back to threaded reply."
+                        )
+                        # Fallback: Post as threaded reply
+                        for url, data in unfurls.items():
+                            blocks = data.get("blocks")
+                            if blocks:
+                                client = slack_channel_inst.get_slack_client()
+                                await client.chat_postMessage(
+                                    channel=channel,
+                                    thread_ts=ts,
+                                    blocks=blocks,
+                                    text=f"AI Insights for: {url}",
+                                )
+                    else:
+                        logger.error("Slack chat.unfurl failed: %s", exc)
+                        raise
 
         except Exception as exc:
             logger.error(
@@ -388,7 +444,7 @@ class ChannelService(BaseChannelService):
     ) -> None:
         """Handles a reply in a threaded conversation."""
         try:
-            slack_channel = await self._get_slack_channel()
+            slack_channel = await self.get_slack_channel()
             client = slack_channel.get_slack_client()
 
             # 1. Fetch parent message to establish context
@@ -479,7 +535,7 @@ class ChannelService(BaseChannelService):
                 )
                 return
 
-            slack_channel = await self._get_slack_channel()
+            slack_channel = await self.get_slack_channel()
             client = slack_channel.get_slack_client()
 
             # 2. Fetch the specific message
@@ -547,7 +603,7 @@ class ChannelService(BaseChannelService):
     async def handle_app_home_opened(self, user_id: str) -> None:
         """Publishes the static Home tab view when a user opens the App Home."""
         try:
-            slack_channel = await self._get_slack_channel()
+            slack_channel = await self.get_slack_channel()
             client = slack_channel.get_slack_client()
 
             logger.info("Publishing App Home view for user=%s", user_id)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TypeVar, cast
 
@@ -13,21 +14,44 @@ logger = get_logger("supabase")
 
 T = TypeVar("T")
 
+# Module-level Supabase connection singleton.
+# Avoids creating a new connection per request (~100-300ms savings).
+_supabase_singleton: Client | None = None
 
-class SupabaseClient:
-    """Description:
-        Asynchronous-aware wrapper for the synchronous Supabase Python SDK.
 
-    Rules Applied:
-        - Executes all blocking I/O calls in a specialized threadpool using anyio.
-        - Injects correlation IDs into all database-level logs for traceability.
-    """
-
-    def __init__(self, *, corr_id: str | None = None) -> None:
-        self.client: Client = create_client(
+def _get_supabase_client() -> Client:
+    """Return the shared Supabase Client, creating it on first use."""
+    global _supabase_singleton  # noqa: PLW0603
+    if _supabase_singleton is None:
+        _supabase_singleton = create_client(
             settings.SUPABASE_URL.unicode_string(),
             settings.SUPABASE_KEY.get_secret_value(),
         )
+    return _supabase_singleton
+
+
+def _serialize_payload(obj: Any) -> Any:
+    """Recursively serialize datetime objects for Supabase JSON columns."""
+    if isinstance(obj, dict):
+        return {k: _serialize_payload(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_serialize_payload(item) for item in obj]
+    if isinstance(obj, datetime.datetime):
+        return obj.isoformat()
+    if isinstance(obj, datetime.date):
+        return obj.isoformat()
+    return obj
+
+
+class SupabaseClient:
+    """Asynchronous-aware wrapper for the synchronous Supabase Python SDK.
+
+    Uses a module-level singleton for the underlying Supabase connection
+    to avoid re-creating it on every request.
+    """
+
+    def __init__(self, *, corr_id: str | None = None) -> None:
+        self.client: Client = _get_supabase_client()
         self.log = CorrelationAdapter(logger, corr_id or "supabase")
 
     async def _run(self, fn: Callable[[], T]) -> T:
@@ -52,7 +76,7 @@ class SupabaseClient:
             dict[str, Any] | None: The record payload or None if not found.
 
         """
-        self.log.info("Fetching single row from %s filters=%s", table, filters)
+        self.log.debug("Fetching single row from %s filters=%s", table, filters)
 
         query = self.client.table(table).select(",".join(select) if select else "*")
 
@@ -81,7 +105,9 @@ class SupabaseClient:
             raise
 
         raw = resp.data
-        self.log.info("RAW SUPABASE ROW: %s", raw)
+        self.log.debug(
+            "Supabase fetch_single from %s: row_found=%s", table, raw is not None
+        )
         if not isinstance(raw, dict):
             self.log.info("No row found for %s filters=%s", table, filters)
             return None
@@ -97,7 +123,7 @@ class SupabaseClient:
         order_by: tuple[str, str] | None = None,
         limit: int | None = None,
     ) -> Sequence[dict[str, Any]]:
-        self.log.info("Fetching many rows from %s filters=%s", table, filters)
+        self.log.debug("Fetching many rows from %s filters=%s", table, filters)
 
         query = self.client.table(table).select(",".join(select) if select else "*")
 
@@ -119,9 +145,10 @@ class SupabaseClient:
         table: str,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        self.log.info("Inserting into %s payload=%s", table, payload)
+        self.log.debug("Inserting into %s", table)
 
-        query = self.client.table(table).insert(payload)
+        serialized_payload = _serialize_payload(dict(payload))
+        query = self.client.table(table).insert(serialized_payload)
         resp = await self._run(query.execute)
 
         # In newer versions, data might be a list or a dict
@@ -140,9 +167,12 @@ class SupabaseClient:
         *,
         on_conflict: str = "id",
     ) -> dict[str, Any] | None:
-        self.log.info("Upserting into %s payload=%s", table, payload)
+        self.log.debug("Upserting into %s", table)
 
-        query = self.client.table(table).upsert(payload, on_conflict=on_conflict)
+        serialized_payload = _serialize_payload(dict(payload))
+        query = self.client.table(table).upsert(
+            serialized_payload, on_conflict=on_conflict
+        )
         resp = await self._run(query.execute)
 
         data = resp.data
@@ -159,9 +189,10 @@ class SupabaseClient:
         filters: Mapping[str, Any],
         payload: Mapping[str, Any],
     ) -> dict[str, Any] | None:
-        self.log.info("Updating %s filters=%s payload=%s", table, filters, payload)
+        self.log.debug("Updating %s filters=%s", table, filters)
 
-        update_query = self.client.table(table).update(payload)
+        serialized_payload = _serialize_payload(dict(payload))
+        update_query = self.client.table(table).update(serialized_payload)
         for key, value in filters.items():
             update_query = update_query.eq(key, value)
 

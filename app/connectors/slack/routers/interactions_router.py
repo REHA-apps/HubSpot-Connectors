@@ -119,7 +119,7 @@ async def _handle_block_actions(
         response_url = payload.get("response_url")
         if response_url:
             try:
-                from app.connectors.slack.channel import SlackChannel  # noqa: PLC0415
+                from app.connectors.slack.channel import SlackChannel
 
                 slack_channel = SlackChannel(corr_id=corr_id, bot_token=bot_token)
                 await slack_channel.send_via_response_url(
@@ -250,7 +250,7 @@ async def _handle_shortcuts(
 
 async def _run_task_with_context(corr_id: str, func: Callable, *args, **kwargs):
     """Wraps a background task in log_context to maintain correlation IDs."""
-    from app.core.logging import log_context  # noqa: PLC0415
+    from app.core.logging import log_context
 
     with log_context(corr_id):
         await func(*args, **kwargs)

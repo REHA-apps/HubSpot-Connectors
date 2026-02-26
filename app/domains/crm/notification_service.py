@@ -142,7 +142,7 @@ class NotificationService:
             return
 
         # Dynamically resolve ChannelService via registry
-        from app.connectors.registry import registry  # noqa: PLC0415
+        from app.connectors.registry import registry
 
         manifest = registry.get_connector(
             "slack"

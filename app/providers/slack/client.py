@@ -58,7 +58,7 @@ class SlackClient:
 
         # We need a channel instance to do the exchange
         # Note: app.channels will eventually become app.connectors
-        from app.connectors.slack.channel import SlackChannel  # noqa: PLC0415
+        from app.connectors.slack.channel import SlackChannel
 
         platform = SlackChannel(corr_id=self.corr_id)
 

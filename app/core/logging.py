@@ -88,9 +88,9 @@ def get_logger(name: str) -> logging.Logger:
 
 
 class CorrelationAdapter(logging.LoggerAdapter):
-    """Description:
-    DEPRECATED: Maintains backward compatibility for services using explicit corr_id.
-    New code should prefer standard logger with log_context.
+    """Logging adapter that injects a correlation ID into every log record.
+
+    Used throughout the application for per-request traceability.
     """
 
     def __init__(self, logger: logging.Logger, corr_id: str, **kwargs: Any) -> None:
@@ -105,13 +105,20 @@ class CorrelationAdapter(logging.LoggerAdapter):
 
 
 async def get_corr_id(request: Request) -> str:
-    """Description:
-    FastAPI dependency that extracts the correlation ID from request headers.
+    """FastAPI dependency that returns the current correlation ID.
+
+    Checks the context variable first (set by LogContextMiddleware),
+    then falls back to the request header, and finally generates a new UUID.
     """
-    header_name = "X-Correlation-ID"
-    corr_id = request.headers.get(header_name)
+    # 1. Already set by middleware for this request
+    ctx_value = corr_id_ctx.get("none")
+    if ctx_value != "none":
+        return ctx_value
 
-    if not corr_id:
-        corr_id = str(uuid.uuid4())
+    # 2. From incoming request header
+    corr_id = request.headers.get("X-Correlation-ID")
+    if corr_id:
+        return corr_id
 
-    return corr_id
+    # 3. Generate new (should rarely happen — middleware runs first)
+    return str(uuid.uuid4())

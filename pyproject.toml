@@ -7,7 +7,7 @@ name = "crm-connectors"
 version = "0.1.0"
 description = "HubSpot Connector Platform for Slack"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "User", email = "user@example.com"},
@@ -20,10 +20,8 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "supabase>=2.12.0",
     "uvicorn[standard]>=0.30.0",
-    "tenacity>=8.0.0",
     "python-multipart",
     "slack-sdk>=3.40.0",
-    "aiohttp>=3.10.0",
 ]
 
 [dependency-groups]
@@ -45,7 +43,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "PL", "D"]
-ignore = ["D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107", "D203", "D213", "D205", "D400", "D401", "D415", "D417"]
+ignore = ["D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107", "D203", "D213", "D205", "D400", "D401", "D415", "D417", "PLC0415"]
 
 [tool.uv]
 managed = true

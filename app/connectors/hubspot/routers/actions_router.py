@@ -18,23 +18,31 @@ router = APIRouter(prefix="/hubspot/actions", tags=["hubspot-actions"])
 
 @router.post("/send-ai-insights-to-slack")
 async def send_ai_insights_to_slack(
-    objectId: str,
-    portalId: str,
+    object_id: str = Query(..., alias="objectId"),
+    portal_id: str = Query(..., alias="portalId"),
+    user_email: str | None = Query(None, alias="userEmail"),
     channel: str | None = None,
     corr_id: str = Depends(get_corr_id),
     hubspot: HubSpotService = Depends(get_hubspot_service),
     ai: AIService = Depends(get_ai_service),
     integration_service: IntegrationService = Depends(get_integration_service),
-):
+) -> dict[str, str]:
     try:
-        contact = await hubspot.get_contact(portalId, objectId)
+        contact = await hubspot.get_contact(portal_id, object_id)
         if not contact:
             raise HTTPException(404, "Contact not found")
 
-        analysis = ai.analyze_contact(contact)
+        analysis = await ai.analyze_contact(contact)
+
+        hs_integration = await integration_service.get_integration(
+            workspace_id=portal_id,
+            provider=Provider.HUBSPOT,
+        )
+        if not hs_integration:
+            raise IntegrationNotFoundError(f"No HubSpot found for {portal_id}")
 
         slack_integration = await integration_service.get_integration(
-            workspace_id=portalId,
+            workspace_id=hs_integration.workspace_id,
             provider=Provider.SLACK,
         )
 
@@ -45,8 +53,9 @@ async def send_ai_insights_to_slack(
         )
 
         await channel_service.send_slack_ai_insights(
-            workspace_id=portalId,
+            workspace_id=hs_integration.workspace_id,
             channel=channel,
+            user_email=user_email,
             analysis=analysis,
         )
 
@@ -56,15 +65,15 @@ async def send_ai_insights_to_slack(
             status_code=404,
             detail=(
                 f"Integration not found: {exc.message}. "
-                "Please insure you have authorized both HubSpot and Slack."
+                "Please ensure you have authorized both HubSpot and Slack."
             ),
         )
 
 
 @router.post("/ping-owner")
 async def ping_owner(
-    objectId: str,
-    portalId: str,
+    object_id: str = Query(..., alias="objectId"),
+    portal_id: str = Query(..., alias="portalId"),
     hs_object_type: str = Query(..., alias="hs_object_type"),
     corr_id: str = Depends(get_corr_id),
     hubspot: HubSpotService = Depends(get_hubspot_service),
@@ -73,7 +82,7 @@ async def ping_owner(
     """Sends a Slack DM to the deal/contact owner with a link to the record."""
     try:
         # 1. Pro plan check
-        is_pro = await integration_service.is_pro_workspace(portalId)
+        is_pro = await integration_service.is_pro_workspace(portal_id)
         if not is_pro:
             raise HTTPException(
                 403, "Ping Owner is a Pro feature. Please upgrade your plan."
@@ -81,7 +90,7 @@ async def ping_owner(
 
         # 2. Get the record to find the owner
         obj = await hubspot.get_object(
-            workspace_id=portalId, object_type=hs_object_type, object_id=objectId
+            workspace_id=portal_id, object_type=hs_object_type, object_id=object_id
         )
         if not obj:
             raise HTTPException(404, f"{hs_object_type} not found")
@@ -92,7 +101,7 @@ async def ping_owner(
             raise HTTPException(400, "No owner assigned to this HubSpot record.")
 
         # 3. Resolve Owner Email
-        owners = await hubspot.get_owners(portalId)
+        owners = await hubspot.get_owners(portal_id)
         owner = next((o for o in owners if o["id"] == owner_id), None)
         if not owner or not owner.get("email"):
             raise HTTPException(404, "Owner details or email not found in HubSpot.")
@@ -101,7 +110,7 @@ async def ping_owner(
 
         # 4. Resolve Slack User ID & Send DM
         slack_integration = await integration_service.get_integration(
-            workspace_id=portalId,
+            workspace_id=portal_id,
             provider=Provider.SLACK,
         )
         if not slack_integration:
@@ -112,7 +121,7 @@ async def ping_owner(
             integration_service=integration_service,
             slack_integration=slack_integration,
         )
-        slack_channel = await channel_service._get_slack_channel()
+        slack_channel = await channel_service.get_slack_channel()
 
         slack_user_id = await slack_channel.get_user_by_email(owner_email)
         if not slack_user_id:

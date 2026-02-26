@@ -64,7 +64,7 @@ async def handle_workflow_action(
     )
 
     if channel_id and not is_slack_id:
-        slack_channel = await channel_service._get_slack_channel()
+        slack_channel = await channel_service.get_slack_channel()
         resolved_id = await slack_channel.resolve_channel_name(channel_id)
         if resolved_id:
             target_id = resolved_id

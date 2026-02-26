@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-from contextvars import ContextVar
-
 import httpx
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import CorrelationAdapter, corr_id_ctx, get_logger
 
 logger = get_logger("utils.http")
-
-# ContextVar for request-scoped correlation ID
-CORR_ID_CTX: ContextVar[str | None] = ContextVar("corr_id", default=None)
 
 
 def normalize_object_type(object_type: str) -> str:
     """Description:
         Centralized normalization for HubSpot object types.
-        Converts to lowercase and handles pluralization (e.g., 'contacts' ->
-        'contact').
+        Converts to lowercase, handles pluralization (e.g., 'contacts' ->
+        'contact'), and maps internal numerical type IDs (e.g., '0-1' -> 'contact').
 
     Args:
         object_type (str): The raw object type string.
@@ -25,6 +20,15 @@ def normalize_object_type(object_type: str) -> str:
         str: Normalized singular object type.
 
     """
+    # Map internal HubSpot type IDs used by UI extensions
+    type_map = {
+        "0-1": "contact",
+        "0-2": "company",
+        "0-3": "deal",
+        "0-4": "ticket",
+    }
+
+    object_type = type_map.get(object_type, object_type)
     return object_type.lower().replace("ies", "y").rstrip("s")
 
 
@@ -53,13 +57,13 @@ class HTTPClient:
             httpx.AsyncClient: The static HTTP client instance.
 
         Rules Applied:
-            - Automatically sets the correlation ID in CORR_ID_CTX context.
+            - Automatically sets the correlation ID in corr_id_ctx context.
             - Configures default timeout and logging hooks on initialization.
 
         """
         # Set context for hooks
         if corr_id:
-            CORR_ID_CTX.set(corr_id)
+            corr_id_ctx.set(corr_id)
 
         log = CorrelationAdapter(logger, corr_id or "no-corr-id")
 
@@ -79,12 +83,12 @@ class HTTPClient:
         return cls._client
 
     # ---------------------------------------------------------
-    # Logging hooks (now generic, use CORR_ID_CTX)
+    # Logging hooks (use corr_id_ctx from app.core.logging)
     # ---------------------------------------------------------
     @staticmethod
     def _inject_headers():
         async def hook(request: httpx.Request):
-            corr_id = CORR_ID_CTX.get() or "no-corr-id"
+            corr_id = corr_id_ctx.get("no-corr-id")
             if corr_id != "no-corr-id":
                 request.headers["X-Correlation-ID"] = corr_id
 
@@ -93,7 +97,7 @@ class HTTPClient:
     @staticmethod
     def _log_request():
         async def hook(request: httpx.Request):
-            corr_id = CORR_ID_CTX.get() or "no-corr-id"
+            corr_id = corr_id_ctx.get("no-corr-id")
             log = CorrelationAdapter(logger, corr_id)
             log.info("HTTP %s %s", request.method, request.url)
 
@@ -102,7 +106,7 @@ class HTTPClient:
     @staticmethod
     def _log_response():
         async def hook(response: httpx.Response):
-            corr_id = CORR_ID_CTX.get() or "no-corr-id"
+            corr_id = corr_id_ctx.get("no-corr-id")
             log = CorrelationAdapter(logger, corr_id)
             log.info(
                 "HTTP %s %s → %s",

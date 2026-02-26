@@ -4,6 +4,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, ClassVar
 
+from pydantic import Field
+
 from app.db.base_record import BaseRecord
 
 
@@ -58,8 +60,8 @@ class IntegrationRecord(BaseRecord):
 
     # Flexible storage for all platforms
     # Supabase jsonb columns
-    credentials: dict[str, Any] = {}
-    metadata: dict[str, Any] = {}
+    credentials: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     # Optional metadata
     created_at: datetime | None = None

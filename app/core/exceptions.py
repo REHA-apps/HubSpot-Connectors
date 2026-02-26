@@ -15,28 +15,18 @@ class AppError(Exception):
 class IntegrationError(AppError):
     """Base for errors related to workspace/provider integrations."""
 
-    pass
-
 
 class IntegrationNotFoundError(IntegrationError):
     """Raised when an integration record is expected but not found."""
-
-    pass
 
 
 class HubSpotAPIError(AppError):
     """Raised when an external HubSpot API call fails."""
 
-    pass
-
 
 class SlackAPIError(AppError):
     """Raised when an external Slack API call fails."""
 
-    pass
-
 
 class AIServiceError(AppError):
     """Raised when AI analysis or heuristics fail."""
-
-    pass

@@ -5,10 +5,9 @@ WORKDIR /app
 # Install uv for fast dependency management
 RUN pip install uv
 
-# Copy only dependency files first for caching
-COPY pyproject.toml .
-# Note: uv.lock is ignored in git, so we rely on pyproject.toml
-RUN uv pip install . --system
+# Copy dependency files first for layer caching
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
 
 # Copy application code
 COPY app ./app

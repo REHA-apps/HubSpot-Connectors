@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from fastapi.routing import APIRoute
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -29,15 +28,11 @@ async def lifespan(app: FastAPI):
         AsyncContextManager: The lifecycle context.
 
     Rules Applied:
-        - Logs all registered routes on startup.
         - Ensures shared HTTP clients are closed on shutdown.
 
     """
     with log_context("startup"):
-        logger.info("Application starting up — listing routes")
-        for route in app.routes:
-            if isinstance(route, APIRoute):
-                logger.info("Route registered: path=%s name=%s", route.path, route.name)
+        logger.info("Application starting up")
         logger.info("Startup complete")
 
     yield

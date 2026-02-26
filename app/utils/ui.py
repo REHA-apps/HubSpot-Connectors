@@ -175,14 +175,8 @@ def render_success_page(
             <p>{escape(message)}</p>
 
             <div class="workspace-badge">
-                Workspace ID: <span class="workspace-id">{workspace_id}</span>
+                Workspace ID: <span class="workspace-id">{escape(workspace_id)}</span>
             </div>
-
-            <!-- <div class="footer-links">
-                <a href="#">Documentation</a>
-                <a href="#">Support</a>
-                <a href="#">Dashboard</a>
-            </div> -->
         </div>
 
         <script>

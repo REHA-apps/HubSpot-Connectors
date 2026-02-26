@@ -118,6 +118,65 @@ class CommandService:
             "text": f"{prefix} for *{query}*...",
         }
 
+    async def _handle_hs_task_creation(
+        self, workspace_id: str, text: str, user_id: str, response_url: str
+    ) -> None:
+        """Process advanced /hs-task parameters and create hit HubSpot task."""
+        from app.utils.parsers import parse_hs_task_command
+        from app.utils.transformers import to_hubspot_timestamp
+
+        try:
+            parsed = parse_hs_task_command(text)
+            subject = parsed["subject"]
+            slack_owner_id = parsed["slack_user_id"]
+            due_date = parsed["due_date"]
+
+            properties: dict[str, Any] = {
+                "hs_task_subject": subject,
+                "hs_task_status": "NOT_STARTED",
+            }
+
+            owner_msg = ""
+            # 1. Resolve HubSpot Owner
+            if slack_owner_id:
+                channel_inst = await self.channel_service.get_slack_channel()
+                slack_client = channel_inst.get_slack_client()
+
+                # Get mentioned user email
+                user_info = await slack_client.users_info(user=slack_owner_id)
+                if user_info.get("ok"):
+                    email = user_info["user"]["profile"].get("email")
+                    if email:
+                        owners = await self.hubspot.get_owners(workspace_id)
+                        hs_owner = next(
+                            (o for o in owners if o.get("email") == email), None
+                        )
+                        if hs_owner:
+                            properties["hubspot_owner_id"] = hs_owner["id"]
+                            owner_msg = f" assigned to <@{slack_owner_id}>"
+
+            # 2. Set Due Date
+            if due_date:
+                properties["hs_timestamp"] = to_hubspot_timestamp(
+                    due_date, corr_id=self.corr_id
+                )
+
+            # 3. Create Task
+            await self.hubspot.create_task(workspace_id, properties)
+
+            due_msg = f" (Due: {due_date.strftime('%Y-%m-%d')})" if due_date else ""
+            success_text = f"✅ Created HubSpot task: *{subject}*{owner_msg}{due_msg}"
+
+            await self.channel_service.send_via_response_url(
+                response_url=response_url, text=success_text
+            )
+
+        except Exception as exc:
+            self.log.error("Task creation failed: %s", exc)
+            await self.channel_service.send_via_response_url(
+                response_url=response_url, text="❌ Failed to create HubSpot task."
+            )
+
     async def _send_report_command(self, workspace_id: str, response_url: str) -> None:
         """Handle /hs report command in the background."""
         try:

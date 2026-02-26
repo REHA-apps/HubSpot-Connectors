@@ -155,6 +155,14 @@ class SlackChannel(BaseChannel):
             self.log.error("OutboundMessage missing destination")
             return None
 
+        # Resolve human-readable channel names like #general into system IDs
+        if destination.startswith("#"):
+            resolved_id = await self.resolve_channel_name(destination)
+            if not resolved_id:
+                self.log.error("Could not resolve named channel: %s", destination)
+                return None
+            destination = resolved_id
+
         if not (
             destination
             and len(destination) >= 9  # noqa: PLR2004
@@ -255,9 +263,20 @@ class SlackChannel(BaseChannel):
 
                 channels = resp.get("channels", [])
                 for channel in channels:
+                    # If we're looking for #general, trust the is_general flag first
+                    if clean_name == "general" and channel.get("is_general"):
+                        channel_id = str(channel.get("id"))
+                        self.log.info(
+                            "Resolved %s to %s via is_general flag", name, channel_id
+                        )
+                        return channel_id
+
+                    # Otherwise, fall back to exact name matching
                     if channel.get("name") == clean_name:
                         channel_id = str(channel.get("id"))
-                        self.log.info("Resolved %s to %s", name, channel_id)
+                        self.log.info(
+                            "Resolved %s to %s via name match", name, channel_id
+                        )
                         return channel_id
 
                 cursor = resp.get("response_metadata", {}).get("next_cursor")
@@ -268,6 +287,40 @@ class SlackChannel(BaseChannel):
             self.log.error("Failed to resolve Slack channel name '%s': %s", name, exc)
 
         self.log.warning("Could not resolve Slack channel name: %s", name)
+        return None
+
+    async def get_default_channel_id(self) -> str | None:
+        """Fetches the workspace's default channel ID (is_general=True)."""
+        client = self.get_slack_client()
+        self.log.info("Fetching default Slack channel (is_general=True)")
+        try:
+            cursor = None
+            while True:
+                resp = await client.conversations_list(
+                    types="public_channel,private_channel",
+                    cursor=cursor,
+                    limit=1000,
+                    exclude_archived=True,
+                )
+                if not resp.get("ok"):
+                    self.log.error(
+                        "Slack conversations.list failed: %s", resp.get("error")
+                    )
+                    break
+
+                channels = resp.get("channels", [])
+                for channel in channels:
+                    if channel.get("is_general"):
+                        channel_id = str(channel.get("id"))
+                        self.log.info("Resolved default channel to %s", channel_id)
+                        return channel_id
+
+                cursor = resp.get("response_metadata", {}).get("next_cursor")
+                if not cursor:
+                    break
+        except Exception as exc:
+            self.log.error("Failed to fetch default channel: %s", exc)
+
         return None
 
     async def apps_uninstall(self) -> bool:

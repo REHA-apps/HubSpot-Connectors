@@ -13,7 +13,9 @@ class HubSpotRenderer:
     Converts a UnifiedCard IR into HubSpot CRM Card JSON.
     """
 
-    def render(self, object_id: str, card: UnifiedCard) -> dict[str, Any]:
+    def render(
+        self, object_id: str, card: UnifiedCard, object_type: str = "contact"
+    ) -> dict[str, Any]:
         properties = []
 
         # Convert subtitle, emoji, metrics into properties
@@ -36,6 +38,7 @@ class HubSpotRenderer:
         properties.append({"label": "AI Insights", "value": "\n".join(summary_parts)})
 
         # 4. Badge Handling
+
         if card.badge:
             properties.insert(0, {"label": "Plan", "value": card.badge})
 
@@ -70,7 +73,10 @@ class HubSpotRenderer:
                 "type": "ACTION_HOOK",
                 "httpMethod": "POST",
                 "label": "Send to Slack",
-                "url": f"{settings.API_BASE_URL}/hubspot/actions/send-to-slack",
+                "url": (
+                    f"{settings.API_BASE_URL}/hubspot/actions/"
+                    f"send-ai-insights-to-slack?hs_object_type={object_type}"
+                ),
             }
         )
 
@@ -93,7 +99,8 @@ def build_crm_card_result(
 
     # 2. Render for HubSpot
     renderer = HubSpotRenderer()
-    return renderer.render(object_id, unified_card)
+    object_type = obj.get("type", "contact")
+    return renderer.render(object_id, unified_card, object_type=object_type)
 
 
 def build_crm_card_response(results: list[dict[str, Any]]) -> dict[str, Any]:

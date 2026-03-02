@@ -20,7 +20,7 @@ async def update_expired_trials():
 
     for workspace in workspaces:
         # Skip if already PRO by explicit tier or active subscription
-        if workspace.tier == PlanTier.PRO or workspace.subscription_status == "active":
+        if workspace.plan == PlanTier.PRO or workspace.subscription_status == "active":
             continue
 
         install_date = workspace.install_date or workspace.created_at

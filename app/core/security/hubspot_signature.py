@@ -47,13 +47,13 @@ async def verify_hubspot_signature(request: Request) -> None:
     body = await request.body()
 
     # HubSpot signs: scheme + host + path (no query params)
-    # request.url.hostname is correct (not .netloc)
-    url = f"{request.url.scheme}://{request.url.hostname}{request.url.path}"
+    # This is critical when behind proxy like ngrok
+    url_base = f"{request.url.scheme}://{request.url.hostname}{request.url.path}"
 
-    signed_data = url.encode() + body
+    signed_data = url_base.encode() + body
 
     digest = hmac.new(
-        secret.encode(),
+        secret.encode("utf-8"),
         msg=signed_data,
         digestmod=hashlib.sha256,
     ).digest()
@@ -61,7 +61,9 @@ async def verify_hubspot_signature(request: Request) -> None:
     computed = base64.b64encode(digest).decode()
 
     if not hmac.compare_digest(computed, signature):
-        log.error("HubSpot signature mismatch")
+        log.error(
+            "HubSpot signature mismatch. URL: %s, Method: %s", url_base, request.method
+        )
         raise HTTPException(
             status_code=ErrorCode.UNAUTHORIZED,
             detail="Invalid signature",

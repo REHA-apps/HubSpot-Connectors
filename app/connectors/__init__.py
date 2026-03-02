@@ -10,6 +10,9 @@ def setup_connectors():
     from app.connectors.hubspot.routers.ai_cards_router import (
         router as hs_ai,
     )
+    from app.connectors.hubspot.routers.billing_router import (
+        router as hs_billing,
+    )
     from app.connectors.hubspot.routers.extensions_router import (
         router as hs_ext,
     )
@@ -18,6 +21,9 @@ def setup_connectors():
     )
     from app.connectors.hubspot.routers.oauth_router import (
         router as hs_oauth,
+    )
+    from app.connectors.hubspot.routers.settings_router import (
+        router as hs_settings,
     )
     from app.connectors.hubspot.routers.ui_extension_router import (
         router as hs_ui_ext,
@@ -59,6 +65,8 @@ def setup_connectors():
             hs_workflow,
             hs_install,
             hs_ui_ext,
+            hs_settings,
+            hs_billing,
         ],
     )
 

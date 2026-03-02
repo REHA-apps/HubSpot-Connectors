@@ -714,9 +714,11 @@ class InteractionService:
             )
 
         try:
-            deals = await self.hubspot.get_company_deals(
+            deals = await self.hubspot.get_associated_objects(
                 workspace_id=integration.workspace_id,
-                company_id=company_id,
+                from_object_type="company",
+                object_id=company_id,
+                to_object_type="deal",
             )
 
             cards = channel_service.cards
@@ -785,9 +787,11 @@ class InteractionService:
             )
 
         try:
-            deals = await self.hubspot.get_contact_deals(
+            deals = await self.hubspot.get_associated_objects(
                 workspace_id=integration.workspace_id,
-                contact_id=contact_id,
+                from_object_type="contact",
+                object_id=contact_id,
+                to_object_type="deal",
             )
 
             cards = channel_service.cards
@@ -856,9 +860,11 @@ class InteractionService:
             )
 
         try:
-            contacts = await self.hubspot.get_company_contacts(
+            contacts = await self.hubspot.get_associated_objects(
                 workspace_id=integration.workspace_id,
-                company_id=company_id,
+                from_object_type="company",
+                object_id=company_id,
+                to_object_type="contact",
             )
 
             cards = channel_service.cards
@@ -1045,9 +1051,11 @@ class InteractionService:
                     trigger_id, "Associated Deals", integration
                 )
 
-            deals = await self.hubspot.get_contact_deals(
+            deals = await self.hubspot.get_associated_objects(
                 workspace_id=integration.workspace_id,
-                contact_id=contact_id,
+                from_object_type="contact",
+                object_id=contact_id,
+                to_object_type="deal",
             )
 
             cards = channel_service.cards
@@ -1114,9 +1122,11 @@ class InteractionService:
                     trigger_id, "Associated Companies", integration
                 )
 
-            companies = await self.hubspot.get_contact_companies(
+            companies = await self.hubspot.get_associated_objects(
                 workspace_id=integration.workspace_id,
-                contact_id=contact_id,
+                from_object_type="contact",
+                object_id=contact_id,
+                to_object_type="company",
             )
 
             cards = channel_service.cards
@@ -1304,7 +1314,7 @@ class InteractionService:
             # 3. Analyze and Render
             analysis = await self.ai.analyze_polymorphic(deal, "deal")
             unified_card = channel_service.cards.build(
-                deal, analysis, pipelines=pipelines, is_pro=is_pro
+                deal, cast(Any, analysis), pipelines=pipelines, is_pro=is_pro
             )
             rendered = channel_service.slack_renderer.render(unified_card)
 
@@ -1984,7 +1994,14 @@ class InteractionService:
             )
 
             # 3. Summarize
-            summary = await self.ai.summarize_thread(replies)
+            from app.domains.ai.service import AIThreadSummary
+
+            analysis = await self.ai.analyze_conversation({"messages": replies})
+            summary = AIThreadSummary(
+                summary=analysis.summary,
+                key_points=[],
+                sentiment=analysis.status,
+            )
 
             # 4. Show modal
             channel_id = kwargs.get("channel_id")

@@ -81,7 +81,7 @@ async def test_notification_service_high_priority_ticket():
             return_value=MagicMock()
         )  # Slack integration exists
         mock_storage.get_workspace = AsyncMock(
-            return_value=MagicMock(tier=PlanTier.PRO)
+            return_value=MagicMock(plan=PlanTier.PRO)
         )
         mock_storage.get_thread_mapping = AsyncMock(return_value=None)
         mock_storage.upsert_thread_mapping = AsyncMock()

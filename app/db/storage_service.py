@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from app.core.logging import CorrelationAdapter, get_logger
 from app.db.records import (
+    AIScoreRecord,
     IntegrationRecord,
     Provider,
+    ScoringConfigRecord,
     ThreadMappingRecord,
     WorkspaceRecord,
 )
@@ -50,28 +53,61 @@ class StorageService:
             corr_id=corr_id,
         )
 
+        self.scoring_configs = SupabaseRepository[ScoringConfigRecord](
+            client=self.client,
+            table="scoring_configs",
+            model=ScoringConfigRecord,
+            corr_id=corr_id,
+        )
+
+        self.ai_scores = SupabaseRepository[AIScoreRecord](
+            client=self.client,
+            table="ai_scores",
+            model=AIScoreRecord,
+            corr_id=corr_id,
+        )
+
     # Workspace operations
     async def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None:
         self.log.info("Fetching workspace workspace_id=%s", workspace_id)
         return await self.workspaces.fetch_single({"id": workspace_id})
 
-    async def upsert_workspace(
+    async def upsert_workspace(  # noqa: PLR0913
         self,
         workspace_id: str,
         primary_email: str | None = None,
+        portal_id: str | None = None,
         subscription_id: str | None = None,
+        subscription_status: str | None = None,
+        stripe_customer_id: str | None = None,
+        plan: str | None = None,
+        trial_ends_at: datetime | None = None,
         install_date: Any | None = None,
     ) -> WorkspaceRecord:
         payload = {
             "id": workspace_id,
             "primary_email": primary_email,
+            "portal_id": portal_id,
             "subscription_id": subscription_id,
+            "subscription_status": subscription_status,
+            "stripe_customer_id": stripe_customer_id,
+            "plan": plan,
+            "trial_ends_at": trial_ends_at,
         }
+        # Filter out None values to avoid overwriting existing data with nulls
+        payload = {k: v for k, v in payload.items() if v is not None}
+
         if install_date:
             payload["install_date"] = install_date
 
         self.log.info("Upserting workspace id=%s", workspace_id)
         return await self.workspaces.upsert(payload)
+
+    async def get_workspace_by_stripe_customer_id(
+        self, customer_id: str
+    ) -> WorkspaceRecord | None:
+        self.log.info("Fetching workspace by stripe_customer_id=%s", customer_id)
+        return await self.workspaces.fetch_single({"stripe_customer_id": customer_id})
 
     async def ensure_workspace(self, workspace_id: str) -> WorkspaceRecord:
         """Description:
@@ -365,6 +401,76 @@ class StorageService:
                 "channel_id": channel_id,
                 "thread_ts": thread_ts,
             }
+        )
+
+    async def store_stripe_event(self, event_id: str) -> bool:
+        """Returns True if event is new.
+        Returns False if event was already processed.
+        """
+        try:
+            response = await self.client.upsert(
+                "stripe_events",
+                {"id": event_id},
+                on_conflict="id",
+                ignore_duplicates=True,
+            )
+
+            if not response or getattr(response, "data", None):
+                return False
+            return True
+        except Exception as e:
+            # Duplicate primary key = already processed
+            self.log.error("Stripe event already processed: %s %s", event_id, e)
+            return False
+
+    # Scoring config operations
+    async def get_scoring_config(
+        self,
+        workspace_id: str,
+    ) -> ScoringConfigRecord | None:
+        return await self.scoring_configs.fetch_single({"workspace_id": workspace_id})
+
+    async def ensure_scoring_config(
+        self,
+        workspace_id: str,
+    ) -> ScoringConfigRecord:
+        config = await self.get_scoring_config(workspace_id)
+        if config:
+            return config
+
+        return await self.scoring_configs.insert({"workspace_id": workspace_id})
+
+    async def upsert_ai_score(
+        self,
+        workspace_id: str,
+        object_type: str,
+        object_id: str,
+        score: int,
+        score_reason: str,
+        next_action: str,
+    ) -> AIScoreRecord:
+        payload = {
+            "workspace_id": workspace_id,
+            "object_type": object_type,
+            "object_id": object_id,
+            "score": score,
+            "score_reason": score_reason,
+            "next_action": next_action,
+            "updated_at": datetime.utcnow(),
+        }
+
+        return await self.ai_scores.upsert(payload)
+
+    async def get_top_scored_objects(
+        self,
+        workspace_id: str,
+        object_type: str,
+        limit: int = 10,
+    ) -> list[AIScoreRecord]:
+        return await self.ai_scores.fetch_many(
+            {"workspace_id": workspace_id, "object_type": object_type},
+            order_by=("score", "desc"),
+            limit=limit,
         )
 
 

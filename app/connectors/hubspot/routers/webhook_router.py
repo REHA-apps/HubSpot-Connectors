@@ -26,20 +26,13 @@ async def verify_hubspot_signature(
     x_hubspot_request_timestamp: str | None = Header(None),
     x_hubspot_signature_version: str = Header(_SIG_V1),
 ) -> None:
-    """Verify the HubSpot webhook signature.
-
-    Supports v1 (SHA-256(secret + body)), v2 (SHA-256(secret + method + URI + body)),
-    and v3 (HMAC-SHA-256(secret, method + URI + body + timestamp)).
-
-    See: https://developers.hubspot.com/docs/api/webhooks#security
-    """
+    """Verify the HubSpot webhook signature."""
     if not settings.HUBSPOT_CLIENT_SECRET:
         logger.warning(
             "HUBSPOT_CLIENT_SECRET not set, skipping signature verification."
         )
         return
 
-    # Determine which signature to validate
     signature = x_hubspot_signature_v3 or x_hubspot_signature
     if not signature:
         raise HTTPException(status_code=401, detail="Missing HubSpot signature header")
@@ -48,46 +41,63 @@ async def verify_hubspot_signature(
     secret = settings.HUBSPOT_CLIENT_SECRET.get_secret_value()
     version = x_hubspot_signature_version.lower()
 
+    # Build the canonical URL for signing (scheme + host + path, no query params)
+    # This is critical for V3 and V2 when behind proxies like ngrok
+    url_base = f"{request.url.scheme}://{request.url.hostname}{request.url.path}"
+
     if version == _SIG_V3 and x_hubspot_signature_v3:
-        # v3: HMAC-SHA-256(secret, method + URI + body + timestamp)
         if not x_hubspot_request_timestamp:
             raise HTTPException(
-                status_code=401,
-                detail="Missing X-HubSpot-Request-Timestamp for v3 signature",
+                status_code=401, detail="Missing timestamp for v3 signature"
             )
-        source_string = (
-            request.method
-            + str(request.url)
-            + body_bytes.decode("utf-8")
-            + x_hubspot_request_timestamp
+
+        # v3: HMAC-SHA-256(secret, method + URL + body + timestamp)
+        source_bytes = (
+            request.method.encode()
+            + url_base.encode()
+            + body_bytes
+            + x_hubspot_request_timestamp.encode()
         )
         expected = hmac.new(
             secret.encode("utf-8"),
-            source_string.encode("utf-8"),
+            source_bytes,
             hashlib.sha256,
         ).hexdigest()
         signature_to_check = x_hubspot_signature_v3
 
     elif version == _SIG_V2:
-        # v2: SHA-256(secret + method + URI + body)
+        # v2: SHA-256(secret + method + URL + body)
         source_string = (
-            secret + request.method + str(request.url) + body_bytes.decode("utf-8")
+            secret
+            + request.method
+            + url_base
+            + body_bytes.decode("utf-8", errors="replace")
         )
         expected = hashlib.sha256(source_string.encode("utf-8")).hexdigest()
         signature_to_check = x_hubspot_signature or ""
 
     else:
-        # v1 (default): SHA-256(secret + body)
-        source = secret.encode("utf-8") + body_bytes
-        expected = hashlib.sha256(source).hexdigest()
+        # v1: SHA-256(secret + body)
+        source_bytes = secret.encode("utf-8") + body_bytes
+        expected = hashlib.sha256(source_bytes).hexdigest()
         signature_to_check = x_hubspot_signature or ""
 
     if not hmac.compare_digest(expected, signature_to_check):
-        logger.error("Invalid HubSpot signature (version=%s)", version)
+        logger.error(
+            "HubSpot signature mismatch (version=%s). "
+            "URL: %s, Method: %s. Expected: %s, Received: %s",
+            version,
+            url_base,
+            request.method,
+            expected,
+            signature_to_check,
+        )
+        # Log headers for deep debugging if signature fails
+        logger.debug("Request Headers: %s", dict(request.headers))
         raise HTTPException(status_code=401, detail="Invalid signature")
 
 
-@router.post("/")
+@router.post("")
 async def handle_hubspot_events(
     request: Request,
     _: None = Depends(verify_hubspot_signature),

@@ -53,7 +53,18 @@ class Settings(BaseSettings):
     API_BASE_URL: HttpUrl = Field(default=HttpUrl("http://localhost"))
     API_PUBLIC_URL: HttpUrl = Field(default=HttpUrl("http://localhost"))
 
-    # Scopes
+    # Stripe settings
+    STRIPE_SECRET_KEY: SecretStr = Field(default=SecretStr(""))
+    STRIPE_WEBHOOK_SECRET: SecretStr = Field(default=SecretStr(""))
+    STRIPE_PRO_PRICE_ID: str = Field(default="")
+
+    # SMTP Settings for Contact Form
+    SMTP_HOST: str = Field(default="smtp.gmail.com")
+    SMTP_PORT: int = Field(default=587)
+    SMTP_USER: str = Field(default="")
+    SMTP_PASSWORD: SecretStr = Field(default=SecretStr(""))
+    CONTACT_EMAIL_DESTINATION: str = Field(default="rehaapps.se@gmail.com")
+
     HUBSPOT_SCOPES: str = Field(
         default=(
             "crm.objects.contacts.read "
@@ -68,6 +79,7 @@ class Settings(BaseSettings):
             "crm.schemas.companies.read "
             "conversations.read "
             "conversations.write "
+            "sales-email-read "
             "tickets "
             "automation "
             "oauth"

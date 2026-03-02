@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -47,12 +47,36 @@ async def get_insight(
         raise HTTPException(status_code=404, detail="Object not found")
 
     # 2. Run Analysis
-    analysis = await ai.analyze_polymorphic(obj, hs_object_type)
 
+    # Universally fetch engagements (now cached behind AsyncTTL)
+    engagements = await hubspot.get_object_engagements(
+        portalId, hs_object_type, objectId
+    )
+    log.info(
+        "Engagements fetched for %s card: %s",
+        hs_object_type,
+        len(engagements) if engagements else 0,
+    )
+
+    # Universally fetch all associated contacts, deals, companies, and tickets
+    associated_objects = await hubspot.get_all_associations(
+        portalId, hs_object_type, objectId
+    )
+    total_assocs = sum(len(objs) for objs in associated_objects.values())
+    log.info("Associations fetched for %s card: %s", hs_object_type, total_assocs)
+
+    analysis = await ai.analyze_polymorphic(
+        obj,
+        hs_object_type,
+        engagements=engagements,
+        associated_objects=associated_objects,
+    )
+    log.info("Object type: %s", hs_object_type)
+    log.info("Engagement sample: %s", engagements[:1] if engagements else None)
     # 3. Build Unified IR
     is_pro = await integration_service.is_pro_workspace(portalId)
     builder = CardBuilder()
-    unified_card = builder.build(obj, analysis, is_pro=is_pro)
+    unified_card = builder.build(obj, cast(Any, analysis), is_pro=is_pro)
 
     # 4. Return IR directly (Modern Extensions consumed JSON)
     return unified_card.model_dump()

@@ -26,6 +26,8 @@ class HubSpotService(BaseCRMService):
 
     _PIPELINES_CACHE = AsyncTTL(ttl=3600)  # Cache for 1 hour
     _OWNERS_CACHE = AsyncTTL(ttl=3600)  # Cache for 1 hour
+    _ENGAGEMENTS_CACHE = AsyncTTL(ttl=300)  # Cache engagements for 5 mins
+    _ASSOCIATIONS_CACHE = AsyncTTL(ttl=300)  # Cache associations for 5 mins
 
     def __init__(self, corr_id: str, *, storage: StorageService | None = None) -> None:
         self.corr_id = corr_id
@@ -33,7 +35,7 @@ class HubSpotService(BaseCRMService):
         self.storage = storage or StorageService(corr_id=corr_id)
 
     # Token management
-    async def _load_tokens(self, workspace_id: str) -> tuple[str, str | None]:
+    async def _load_tokens(self, workspace_id: str) -> tuple[str, str | None, str]:
         integration = await self.storage.get_integration(
             workspace_id=workspace_id,
             provider=Provider.HUBSPOT,
@@ -49,11 +51,13 @@ class HubSpotService(BaseCRMService):
 
         access_token = integration.access_token
         refresh_token = integration.refresh_token
-        return access_token, refresh_token
+        return access_token, refresh_token, integration.workspace_id
 
     # Client lifecycle
     async def get_client(self, workspace_id: str) -> HubSpotClient:
-        access_token, refresh_token = await self._load_tokens(workspace_id)
+        access_token, refresh_token, true_workspace_id = await self._load_tokens(
+            workspace_id
+        )
 
         client = HubSpotClient(
             access_token=access_token,
@@ -63,7 +67,7 @@ class HubSpotService(BaseCRMService):
 
         async def _handle_refresh(new_at: str, new_rt: str | None) -> None:
             await self.persist_tokens(
-                workspace_id=workspace_id,
+                workspace_id=true_workspace_id,
                 new_access=new_at,
                 new_refresh=new_rt,
             )
@@ -73,7 +77,8 @@ class HubSpotService(BaseCRMService):
 
         async def _handle_revocation() -> None:
             self.log.warning(
-                "Reactive uninstallation triggered for workspace_id=%s", workspace_id
+                "Reactive uninstallation triggered for workspace_id=%s",
+                true_workspace_id,
             )
             # Avoid circular import
             from app.domains.crm.integration_service import (
@@ -82,7 +87,7 @@ class HubSpotService(BaseCRMService):
 
             service = IntegrationService(self.corr_id, storage=self.storage)
             await service.uninstall_workspace(
-                workspace_id, trigger_hubspot_uninstall=False
+                true_workspace_id, trigger_hubspot_uninstall=False
             )
 
         client.on_token_revoked = _handle_revocation
@@ -295,6 +300,86 @@ class HubSpotService(BaseCRMService):
             return results[0]
         return None
 
+    async def get_object_engagements(
+        self,
+        workspace_id: str,
+        object_type: str,
+        object_id: str,
+    ) -> list[dict[str, Any]]:
+        key = f"engagements:{workspace_id}:{object_type}:{object_id}"
+
+        async def _fetch():
+            client = await self.get_client(workspace_id=workspace_id)
+
+            # Map to plural for associations API
+            hs_type = object_type.lower()
+            if hs_type in ("contact", "0-1"):
+                hs_type = "contacts"
+            elif hs_type in ("company", "0-2"):
+                hs_type = "companies"
+            elif hs_type in ("deal", "0-3"):
+                hs_type = "deals"
+            elif hs_type in ("ticket", "0-5"):
+                hs_type = "tickets"
+
+            engagements = []
+
+            entities = {
+                "emails": ["hs_email_subject", "hs_email_text", "hs_timestamp"],
+                "meetings": [
+                    "hs_meeting_title",
+                    "hs_meeting_body",
+                    "hs_meeting_start_time",
+                    "hs_meeting_end_time",
+                    "hs_meeting_outcome",
+                ],
+                "calls": [
+                    "hs_call_title",
+                    "hs_call_body",
+                    "hs_call_status",
+                    "hs_timestamp",
+                ],
+                "tasks": [
+                    "hs_task_subject",
+                    "hs_task_body",
+                    "hs_task_status",
+                    "hs_task_priority",
+                    "hs_timestamp",
+                ],
+            }
+
+            for entity_type, props in entities.items():
+                try:
+                    assoc_ids = await client.get_associations(
+                        hs_type,
+                        object_id,
+                        entity_type,
+                    )
+
+                    if assoc_ids:
+                        details = await client.batch_read(
+                            entity_type,
+                            assoc_ids,
+                            properties=props,
+                        )
+
+                        for d in details:
+                            d["_engagement_type"] = entity_type
+                            engagements.append(d)
+
+                except Exception as e:
+                    self.log.error(
+                        "Failed to fetch %s engagements for %s %s: %s",
+                        entity_type,
+                        object_type,
+                        object_id,
+                        e,
+                    )
+
+            return engagements
+
+        return await self._ENGAGEMENTS_CACHE.get_or_fetch(key, _fetch)
+
     async def get_deal(
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
@@ -426,102 +511,90 @@ class HubSpotService(BaseCRMService):
             text=text,
         )
 
-    async def get_company_deals(
+    async def get_associated_objects(
         self,
         workspace_id: str,
-        company_id: str,
+        from_object_type: str,
+        object_id: str,
+        to_object_type: str,
     ) -> list[dict[str, Any]]:
-        """Fetch all deals associated with a company via batch read."""
-        client = await self.get_client(workspace_id)
+        """Generic method to fetch and batch read any associated object type."""
+        key = f"assoc:{workspace_id}:{from_object_type}:{object_id}:{to_object_type}"
 
-        # 1. Get associated deal IDs
-        deal_ids = await client.get_associations("companies", company_id, "deals")
-        if not deal_ids:
-            return []
+        async def _fetch():
+            client = await self.get_client(workspace_id)
 
-        # 2. Batch read all deals in one API call
-        deals = await client.batch_read(
-            "deals",
-            deal_ids[:100],
-            properties=["dealname", "amount", "pipeline", "dealstage"],
-        )
-        for deal in deals:
-            deal["type"] = "deal"
+            # Determine properties based on what we are fetching
+            props = []
+            target_name = "name"
+            if to_object_type == "contacts":
+                props = ["firstname", "lastname", "email", "phone", "lifecyclestage"]
+                target_name = "contact"
+            elif to_object_type == "deals":
+                props = ["dealname", "amount", "pipeline", "dealstage"]
+                target_name = "deal"
+            elif to_object_type == "companies":
+                props = ["name", "domain", "industry"]
+                target_name = "company"
+            elif to_object_type == "tickets":
+                props = ["subject", "hs_ticket_priority", "hs_ticket_category"]
+                target_name = "ticket"
 
-        return await self.inject_urls(workspace_id, deals, "deal")
+            assoc_ids = await client.get_associations(
+                from_object_type, object_id, to_object_type
+            )
+            if not assoc_ids:
+                return []
 
-    async def get_company_contacts(
-        self,
-        workspace_id: str,
-        company_id: str,
-    ) -> list[dict[str, Any]]:
-        """Fetch all contacts associated with a company via batch read."""
-        client = await self.get_client(workspace_id)
+            objects = await client.batch_read(
+                to_object_type, assoc_ids[:100], properties=props
+            )
+            for obj in objects:
+                obj["type"] = target_name
 
-        contact_ids = await client.get_associations("companies", company_id, "contacts")
-        if not contact_ids:
-            return []
+            return await self.inject_urls(workspace_id, objects, target_name)
 
-        # Batch read all contacts in one API call
-        contacts = await client.batch_read(
-            "contacts",
-            contact_ids[:100],
-            properties=["firstname", "lastname", "email", "phone", "lifecyclestage"],
-        )
-        for contact in contacts:
-            contact["type"] = "contact"
+        return await self._ASSOCIATIONS_CACHE.get_or_fetch(key, _fetch)
 
-        return await self.inject_urls(workspace_id, contacts, "contact")
+    async def get_all_associations(
+        self, workspace_id: str, object_type: str, object_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Fetch all primary associations for a given object."""
+        # Normalize the incoming object type into HubSpot's plural formulation
+        hs_type = object_type.lower()
+        if hs_type in ("contact", "0-1"):
+            hs_type = "contacts"
+        elif hs_type in ("company", "0-2"):
+            hs_type = "companies"
+        elif hs_type in ("deal", "0-3"):
+            hs_type = "deals"
+        elif hs_type in ("ticket", "0-5"):
+            hs_type = "tickets"
 
-    async def get_contact_deals(
-        self,
-        workspace_id: str,
-        contact_id: str,
-    ) -> list[dict[str, Any]]:
-        """Fetch all deals associated with a contact via batch read."""
-        client = await self.get_client(workspace_id)
+        import asyncio
 
-        deal_ids = await client.get_associations("contacts", contact_id, "deals")
-        if not deal_ids:
-            return []
+        # Request all fundamental connection limits
+        targets = ["contacts", "companies", "deals", "tickets"]
+        # Remove self-associations
+        if hs_type in targets:
+            targets.remove(hs_type)
 
-        deals = await client.batch_read(
-            "deals",
-            deal_ids[:100],
-            properties=["dealname", "amount", "pipeline", "dealstage"],
-        )
-        for deal in deals:
-            deal["type"] = "deal"
+        tasks = {
+            t: self.get_associated_objects(workspace_id, hs_type, object_id, t)
+            for t in targets
+        }
 
-        return await self.inject_urls(workspace_id, deals, "deal")
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
-    async def get_contact_companies(
-        self,
-        workspace_id: str,
-        contact_id: str,
-    ) -> list[dict[str, Any]]:
-        """Fetch all companies associated with a contact via batch read."""
-        client = await self.get_client(workspace_id)
+        final_associations = {}
+        for target, res in zip(tasks.keys(), results, strict=False):
+            if isinstance(res, Exception):
+                self.log.error(f"Failed to fetch {target} associations: {res}")
+                final_associations[target] = []
+            else:
+                final_associations[target] = res
 
-        company_ids = await client.get_associations("contacts", contact_id, "companies")
-        if not company_ids:
-            return []
-
-        companies = await client.batch_read(
-            "companies",
-            company_ids[:100],
-            properties=[
-                "name",
-                "domain",
-                "industry",
-                "num_associated_contacts",
-                "num_associated_deals",
-            ],
-        )
-        for co in companies:
-            co["type"] = "company"
-
-        return await self.inject_urls(workspace_id, companies, "company")
+        return final_associations
 
     async def get_deal_pipelines(self, workspace_id: str) -> list[dict[str, Any]]:
         """Fetch deal pipelines with global TTL caching.

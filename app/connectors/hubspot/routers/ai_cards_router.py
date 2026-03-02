@@ -29,5 +29,7 @@ async def contact_analysis(
     if not contact:
         raise HTTPException(404, "Contact not found")
 
-    analysis = ai.analyze_contact(contact)
+    engagements = await hubspot.get_object_engagements(portalId, "contact", objectId)
+
+    analysis = await ai.analyze_contact(contact, engagements=engagements)
     return {"analysis": analysis.__dict__}

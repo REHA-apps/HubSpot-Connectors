@@ -17,10 +17,11 @@ router = APIRouter(prefix="/hubspot/actions", tags=["hubspot-actions"])
 
 
 @router.post("/send-ai-insights-to-slack")
-async def send_ai_insights_to_slack(
+async def send_ai_insights_to_slack(  # noqa: PLR0913
     object_id: str = Query(..., alias="objectId"),
     portal_id: str = Query(..., alias="portalId"),
     user_email: str | None = Query(None, alias="userEmail"),
+    hs_object_type: str = Query(..., alias="hs_object_type"),
     channel: str | None = None,
     corr_id: str = Depends(get_corr_id),
     hubspot: HubSpotService = Depends(get_hubspot_service),
@@ -28,11 +29,26 @@ async def send_ai_insights_to_slack(
     integration_service: IntegrationService = Depends(get_integration_service),
 ) -> dict[str, str]:
     try:
-        contact = await hubspot.get_contact(portal_id, object_id)
-        if not contact:
-            raise HTTPException(404, "Contact not found")
+        obj = await hubspot.get_object(
+            workspace_id=portal_id, object_type=hs_object_type, object_id=object_id
+        )
+        if not obj:
+            raise HTTPException(404, f"Record not found for id {object_id}")
 
-        analysis = await ai.analyze_contact(contact)
+        # 2. Extract AI Analysis
+        engagements = await hubspot.get_object_engagements(
+            portal_id, hs_object_type, object_id
+        )
+        associated_objects = await hubspot.get_all_associations(
+            portal_id, hs_object_type, object_id
+        )
+
+        analysis = await ai.analyze_polymorphic(
+            obj,
+            hs_object_type,
+            engagements=engagements,
+            associated_objects=associated_objects,
+        )
 
         hs_integration = await integration_service.get_integration(
             workspace_id=portal_id,

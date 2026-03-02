@@ -68,7 +68,7 @@ class NotificationService:
             return
 
         # 2. Determine Object Type
-        obj_type = self._map_subscription_to_type(sub_type)
+        obj_type = self._map_subscription_to_type(sub_type, event)
         if not obj_type:
             self.log.info("Skipping unhandled subscription type: %s", sub_type)
             return
@@ -90,7 +90,10 @@ class NotificationService:
         analysis = await self.ai.analyze_polymorphic(obj, obj_type)
 
         # 5. Check Notification Threshold
-        if not self._should_notify(analysis, event):
+        # Always notify on creation events so new tickets/contacts/deals
+        # are never silently dropped, regardless of priority.
+        is_creation = "creation" in sub_type
+        if not is_creation and not self._should_notify(analysis, event):
             self.log.info(
                 "Skipping notification for %s %s (below threshold)", obj_type, object_id
             )
@@ -205,7 +208,11 @@ class NotificationService:
                 )
                 self.log.info("Stored new thread mapping thread_ts=%s", sent_ts)
 
-    def _map_subscription_to_type(self, sub_type: str) -> str | None:
+    def _map_subscription_to_type(
+        self, sub_type: str, event: dict[str, Any] | None = None
+    ) -> str | None:
+        # Standard subscription type format:
+        # 'ticket.creation', 'deal.propertyChange', etc.
         type_map = {
             "contact": "contact",
             "deal": "deal",
@@ -213,28 +220,66 @@ class NotificationService:
             "ticket": "ticket",
             "task": "task",
             "conversation": "conversation",
+            "lead": "lead",
         }
         for key, val in type_map.items():
             if key in sub_type:
                 return val
+
+        # HubSpot CRM Events format: 'object.creation', 'object.propertyChange'
+        # Object type is identified via objectTypeId in the event payload.
+        if sub_type.startswith("object.") and event:
+            object_type_id_map = {
+                "0-1": "contact",
+                "0-2": "deal",
+                "0-3": "company",
+                "0-5": "ticket",
+                "0-4": "task",
+                "0-136": "lead",  # HubSpot Leads object
+            }
+            object_type_id = str(event.get("objectTypeId", ""))
+            obj_type = object_type_id_map.get(object_type_id)
+            if obj_type:
+                self.log.info(
+                    "Mapped object.* event objectTypeId=%s → %s",
+                    object_type_id,
+                    obj_type,
+                )
+                return obj_type
+
         return None
 
-    def _should_notify(self, analysis: Any, event: dict[str, Any]) -> bool:
-        """Description:
-        Determines if a notification should be sent based on AI analysis or event type.
-        Refined to avoid noise.
+    def _should_notify(  # noqa: PLR0911
+        self, analysis: Any, event: dict[str, Any]
+    ) -> bool:
+        """Determine if a notification should be sent.
+
+        Uses event fields or AI analysis to decide.
         """
-        # 1. Deals: Notify on High Risk or Closed Won (if we get that info)
+        # 1. Ticket priority changed to HIGH or URGENT — always notify.
+        #    Check the raw event directly so we don't rely on AI to catch it.
+        if event.get("propertyName") == "hs_ticket_priority" and str(
+            event.get("propertyValue", "")
+        ).upper() in ("HIGH", "URGENT"):
+            return True
+
+        # 2. Deal stage changed to closed-won or closed-lost — always notify.
+        if event.get("propertyName") == "dealstage" and str(
+            event.get("propertyValue", "")
+        ).lower() in ("closedwon", "closedlost"):
+            return True
+
+        # 3. AI-driven: Deals with High/Critical risk
         if hasattr(analysis, "risk"):
             if analysis.risk in ["High", "Critical"]:
                 return True
 
-        # 2. Tickets: Notify on High/Critical Urgency
+        # 4. AI-driven: Tickets with High/Critical urgency
         if hasattr(analysis, "urgency"):
             if analysis.urgency in ["High", "Critical"]:
                 return True
 
-        # 3. Contacts: Notify on High Score (e.g. > 80)
+        # 5. AI-driven: Contacts with score >= threshold
         if hasattr(analysis, "score"):
             try:
                 if int(analysis.score) >= self.AI_SCORE_THRESHOLD:
@@ -242,17 +287,11 @@ class NotificationService:
             except (ValueError, TypeError):
                 pass
 
-        # 4. Tasks: Notify if "Not Started" but Priority is High?
-        # Or maybe just don't notify for tasks automatically yet to avoid spam.
-        if hasattr(analysis, "status_label"):
-            # For now, maybe only high priority tasks?
-            pass
-
-        # 5. Conversations: Always notify
+        # 6. Conversations: always notify
         if hasattr(analysis, "status") and "Conversation" in str(
             getattr(analysis, "summary", "")
         ):
             return True
 
-        # Default: Don't notify to keep signal-to-noise ratio high
+        # Default: suppress to keep signal-to-noise ratio high
         return False

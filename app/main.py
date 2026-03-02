@@ -3,7 +3,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -33,6 +35,25 @@ async def lifespan(app: FastAPI):
     """
     with log_context("startup"):
         logger.info("Application starting up")
+
+        # Start billing background task
+        import asyncio
+
+        from app.domains.crm.billing_service import BillingService
+
+        async def billing_worker():
+            while True:
+                try:
+                    service = BillingService(corr_id="billing-worker")
+                    await service.check_trial_expiries()
+                except Exception as e:
+                    logger.error("Billing worker error: %s", e)
+                # Wait 24 hours
+                await asyncio.sleep(24 * 3600)
+
+        # Run it as a background task
+        asyncio.create_task(billing_worker())
+
         logger.info("Startup complete")
 
     yield
@@ -50,6 +71,14 @@ app = FastAPI(
 )
 
 app.add_middleware(LogContextMiddleware)
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 
 @app.exception_handler(AppError)

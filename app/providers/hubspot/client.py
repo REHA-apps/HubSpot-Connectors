@@ -180,7 +180,7 @@ class HubSpotClient(BaseClient):
                         if isinstance(result, Awaitable):
                             await result
 
-                    return await super().request(
+                    return await self._raw_request(
                         method,
                         path,
                         params=params,

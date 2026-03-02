@@ -11,7 +11,6 @@ from app.core.exceptions import IntegrationNotFoundError
 from app.core.logging import CorrelationAdapter, get_logger
 from app.db.records import IntegrationRecord, PlanTier, Provider
 from app.db.storage_service import StorageService
-from app.domains.crm.hubspot.workflow_service import WorkflowService
 from app.providers.slack.client import SlackClient
 
 logger = get_logger("integration.service")
@@ -49,11 +48,6 @@ class IntegrationService:
         from app.domains.crm.hubspot.service import HubSpotService
 
         return HubSpotService(self.corr_id, storage=self.storage)
-
-    @cached_property
-    def workflow_service(self):
-        """Lazy-loaded — only needed during OAuth install flows."""
-        return WorkflowService(self.corr_id, self.storage)
 
     async def get_integration(
         self,
@@ -150,7 +144,7 @@ class IntegrationService:
 
     async def get_tier(self, workspace_id: str) -> PlanTier:
         """Description:
-            Retrieves the plan tier for a workspace, accounting for the 14-day trial.
+            Retrieves the plan tier for a workspace, accounting for the 7-day trial.
 
         Args:
             workspace_id (str): The workspace to check.
@@ -172,11 +166,11 @@ class IntegrationService:
             return PlanTier.FREE
 
         # 1. Active subscription check
-        if workspace.subscription_status == "active" or workspace.tier == PlanTier.PRO:
+        if workspace.subscription_status == "active" or workspace.plan == PlanTier.PRO:
             _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.PRO)
             return PlanTier.PRO
 
-        # 2. 14-day Trial check
+        # 2. 7-day Trial check
         install_date = workspace.install_date or workspace.created_at
         if install_date:
             # Ensure we're comparing offset-aware datetimes
@@ -184,7 +178,7 @@ class IntegrationService:
             if install_date.tzinfo is None:
                 install_date = install_date.replace(tzinfo=UTC)
 
-            if target_now <= install_date + timedelta(days=14):
+            if target_now <= install_date + timedelta(days=7):
                 _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.PRO)
                 return PlanTier.PRO
 
@@ -225,6 +219,26 @@ class IntegrationService:
         self.log.info("Exchanging HubSpot OAuth code")
         token = await self.hubspot_channel.exchange_token(code)
 
+        # Fetch token info to capture the installing user's email
+        primary_email: str | None = None
+        try:
+            from app.utils.helpers import HTTPClient
+
+            http = HTTPClient.get_client(corr_id=self.corr_id)
+            info_resp = await http.get(
+                f"https://api.hubapi.com/oauth/v1/access-tokens/{token.access_token}"
+            )
+            if info_resp.is_success:
+                info = info_resp.json()
+                primary_email = info.get(
+                    "user"
+                )  # 'user' field is the installer's email
+                self.log.info(
+                    "Captured primary_email=%s from HubSpot token info", primary_email
+                )
+        except Exception as e:
+            self.log.warning("Could not fetch HubSpot token info: %s", e)
+
         # Slack-first install (only if state was not dropped)
         slack_integration = None
         if state:
@@ -233,13 +247,20 @@ class IntegrationService:
         if slack_integration:
             workspace_id = slack_integration.workspace_id
             self.log.info("Resolved workspace via Slack-first install")
+            # Update primary_email on existing workspace if we have it
+            if primary_email:
+                await self.storage.upsert_workspace(
+                    workspace_id=workspace_id, primary_email=primary_email
+                )
         else:
             # HubSpot-first install or state was dropped
             import uuid
 
             workspace_id = state or str(uuid.uuid4())
             workspace = await self.storage.upsert_workspace(
-                workspace_id=workspace_id, install_date=datetime.now(UTC)
+                workspace_id=workspace_id,
+                primary_email=primary_email,
+                install_date=datetime.now(UTC),
             )
             # Re-read to guarantee we have the assigned ID
             workspace_id = workspace.id
@@ -265,9 +286,11 @@ class IntegrationService:
 
         await self.storage.upsert_integration(hs_payload)
 
-        # Seed initial workflows for user
-        await self.workflow_service.seed_all_workflows(workspace_id)
-
+        # Workflow seeding is disabled: referencing the custom
+        # "Send Slack Message" action
+        # programmatically requires a numeric definition ID only available via hapikey.
+        # Users can manually create workflows via HubSpot → Automations → Workflows,
+        # selecting "Send Slack Message" from the action library.
         self.log.info("HubSpot integration saved workspace_id=%s", workspace_id)
         return workspace_id
 

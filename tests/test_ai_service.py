@@ -60,6 +60,25 @@ def test_null_fields_handled(ai):
     assert isinstance(result, str)
 
 
+def test_generate_contact_insight_with_engagements(ai):
+    """Engagements are properly formatted into the insight string."""
+    contact = {"properties": {"firstname": "John"}}
+    engagements = [
+        {
+            "_engagement_type": "meetings",
+            "properties": {
+                "hs_meeting_title": "Test Meeting",
+                "hs_timestamp": "2026-02-27T07:00:00Z",
+            },
+            "id": "111",
+        }
+    ]
+    result = ai.generate_contact_insight(contact, engagements)
+    assert "Test Meeting" in result
+    assert "Sources:" in result
+    assert "1. Meeting | Test Meeting | ID: 111" in result
+
+
 def test_extreme_visits_value(ai):
     """Very large visit count doesn't overflow."""
     props = {"hs_analytics_num_visits": "999999999"}

@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from app.connectors.slack.services.channel_service import ChannelService
+from app.core.logging import CorrelationAdapter, get_logger
+from app.db.records import WorkspaceRecord
+from app.db.storage_service import StorageService
+
+logger = get_logger("billing.service")
+
+_TRIAL_REMINDER_DAYS_LEFT = 2  # "Day 5" = 2 days remaining in 7-day trial
+
+
+class BillingService:
+    """Description:
+    Service for managing subscription lifecycles, trial expiries, and reminders.
+    """
+
+    def __init__(self, corr_id: str, storage: StorageService | None = None):
+        self.corr_id = corr_id
+        self.log = CorrelationAdapter(logger, corr_id)
+        self.storage = storage or StorageService(corr_id=corr_id)
+
+    async def check_trial_expiries(self) -> None:
+        """Scans all workspaces for expired trials and downgrades them to free.
+        Also sends a 'day 5' reminder to users.
+        """
+        self.log.info("Starting scheduled trial expiry check")
+
+        # 1. Handle Expiries (trial_ends_at < now)
+        now = datetime.now(UTC)
+        # We'd need a way to filter by trial_ends_at in storage_service.
+        # For now, let's assume we list trialing workspaces.
+        # Note: listing all might be expensive if many, but fine for now.
+
+        # Fetch only workspaces currently on a trial plan
+        workspaces = await self.storage.workspaces.fetch_many({"plan": "trial"})
+
+        for ws in workspaces:
+            if ws.trial_ends_at and ws.trial_ends_at < now:
+                await self._downgrade_expired_trial(ws)
+            elif ws.trial_ends_at:
+                days_left = (ws.trial_ends_at - now).days
+                if days_left == _TRIAL_REMINDER_DAYS_LEFT:
+                    await self._send_trial_reminder(ws, days_left)
+
+    async def _downgrade_expired_trial(self, workspace: WorkspaceRecord) -> None:
+        self.log.info(
+            "Trial expired for workspace_id=%s. Downgrading to free.", workspace.id
+        )
+        await self.storage.upsert_workspace(
+            workspace_id=workspace.id, plan="free", subscription_status="inactive"
+        )
+        # TODO: notify user via Slack?
+
+    async def _send_trial_reminder(
+        self, workspace: WorkspaceRecord, days_left: int
+    ) -> None:
+        self.log.info(
+            "Sending trial reminder to workspace_id=%s (%s days left)",
+            workspace.id,
+            days_left,
+        )
+
+        # Fetch Slack integration to send message
+        from app.db.records import Provider
+
+        slack_integ = await self.storage.get_integration(workspace.id, Provider.SLACK)
+        if not slack_integ:
+            self.log.warning(
+                "No Slack integration found for workspace_id=%s, cannot send reminder",
+                workspace.id,
+            )
+            return
+
+        # Initialize ChannelService
+        from app.domains.crm.integration_service import IntegrationService
+
+        integration_service = IntegrationService(self.corr_id, storage=self.storage)
+        channel_service = ChannelService(
+            corr_id=self.corr_id,
+            integration_service=integration_service,
+            slack_integration=slack_integ,
+        )
+
+        message = (
+            f"🔔 *Plan Reminder*: Your 7-day Pro trial expires in {days_left} days. "
+            "Upgrade now to keep your advanced CRM notifications active! "
+            "Visit <https://rehaapps.se/pricing|Pricing> to subscribe."
+        )
+
+        # Resolve default channel or use metadata
+        channel = slack_integ.metadata.get("channel_id")
+        if not channel:
+            # Fallback to general lookup or specific discovery
+            self.log.warning(
+                "No default channel set for reminder in workspace_id=%s", workspace.id
+            )
+            return
+
+        await channel_service.send_message(
+            workspace_id=workspace.id, channel=channel, text=message
+        )
+        self.log.info("Trial reminder sent successfully to channel=%s", channel)

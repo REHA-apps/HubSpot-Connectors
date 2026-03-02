@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from slack_sdk.errors import SlackApiError
 
@@ -108,7 +108,7 @@ class ChannelService(BaseChannelService):
             analysis = await self.ai.analyze_polymorphic(obj, obj_type)
 
         # 2. Build Unified IR
-        unified_card = self.cards.build(obj, analysis, is_pro=is_pro)
+        unified_card = self.cards.build(obj, cast(Any, analysis), is_pro=is_pro)
 
         # 3. Render for Slack
         rendered = self.slack_renderer.render(unified_card)
@@ -342,7 +342,11 @@ class ChannelService(BaseChannelService):
         # 4. Build Unified IR
         is_pro = await self.integration_service.is_pro_workspace(workspace_id)
         unified_card = self.cards.build(
-            obj, analysis, pipelines=pipelines, task_context=task_context, is_pro=is_pro
+            obj,
+            cast(Any, analysis),
+            pipelines=pipelines,
+            task_context=task_context,
+            is_pro=is_pro,
         )
         rendered = self.slack_renderer.render(unified_card)
 
@@ -389,7 +393,7 @@ class ChannelService(BaseChannelService):
 
                 # 3. Build Card Blocks
                 is_pro = await self.integration_service.is_pro_workspace(workspace_id)
-                unified_card = self.cards.build(obj, analysis, is_pro=is_pro)
+                unified_card = self.cards.build(obj, cast(Any, analysis), is_pro=is_pro)
                 rendered = self.slack_renderer.render(unified_card)
 
                 # 4. Add to unfurls

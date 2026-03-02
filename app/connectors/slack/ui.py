@@ -11,6 +11,7 @@ from app.domains.ai.service import (
     AIContactAnalysis,
     AIConversationAnalysis,
     AIDealAnalysis,
+    AIEngagementAnalysis,
     AITaskAnalysis,
     AIThreadSummary,
     AITicketAnalysis,
@@ -210,7 +211,9 @@ class CardBuilder:
                     action_type="modal",
                     value=f"add_note:contact:{obj['id']}",
                 ),
-            ],
+            ]
+            if is_pro
+            else [],
         )
 
     def build_lead(
@@ -252,7 +255,9 @@ class CardBuilder:
                     action_type="modal",
                     value=f"reassign_owner:contact:{obj['id']}",
                 ),
-            ],
+            ]
+            if is_pro
+            else [],
         )
 
     def build_company(
@@ -299,35 +304,39 @@ class CardBuilder:
             secondary_content=[
                 ("Next Action", analysis.next_action),
             ],
-            actions=[
-                CardAction(
-                    label="Open in HubSpot",
-                    action_type="url",
-                    value="open_hubspot",
-                    url=obj.get("hs_url", "https://app.hubspot.com"),
-                )
-            ]
-            + (
+            actions=(
                 [
                     CardAction(
-                        label="View Deals",
-                        action_type="callback",
-                        value=f"view_company_deals:{obj['id']}",
-                    ),
-                    CardAction(
-                        label="View Contacts",
-                        action_type="callback",
-                        value=f"view_contacts:{obj['id']}",
-                    ),
-                    CardAction(
-                        label="Add Note",
-                        action_type="modal",
-                        value=f"add_note:company:{obj['id']}",
-                    ),
+                        label="Open in HubSpot",
+                        action_type="url",
+                        value="open_hubspot",
+                        url=obj.get("hs_url", "https://app.hubspot.com"),
+                    )
                 ]
-                if include_actions
-                else []
-            ),
+                + (
+                    [
+                        CardAction(
+                            label="View Deals",
+                            action_type="callback",
+                            value=f"view_company_deals:{obj['id']}",
+                        ),
+                        CardAction(
+                            label="View Contacts",
+                            action_type="callback",
+                            value=f"view_contacts:{obj['id']}",
+                        ),
+                        CardAction(
+                            label="Add Note",
+                            action_type="modal",
+                            value=f"add_note:company:{obj['id']}",
+                        ),
+                    ]
+                    if include_actions
+                    else []
+                )
+            )
+            if is_pro
+            else [],
         )
 
     def build_deal(
@@ -449,27 +458,61 @@ class CardBuilder:
             actions=actions,
         )
 
-    def build_ai_insights(self, analysis: AIContactAnalysis) -> UnifiedCard:
-        return UnifiedCard(
-            title="AI Insights",
-            subtitle="Contact Insights",
-            emoji="🤖",
-            content=analysis.summary,
-            secondary_content=[
-                ("Next Action", analysis.next_action),
-                ("Reasoning", analysis.next_action_reason),
-            ],
+    def build_ai_insights(self, analysis: Any) -> UnifiedCard:
+        subtitle = "Insights"
+        emoji = "🤖"
+
+        type_name = type(analysis).__name__
+        if "Contact" in type_name:
+            subtitle = "Contact Insights"
+            emoji = "👤"
+        elif "Deal" in type_name:
+            subtitle = "Deal Insights"
+            emoji = "💰"
+        elif "Company" in type_name:
+            subtitle = "Company Insights"
+            emoji = "🏢"
+        elif "Ticket" in type_name:
+            subtitle = "Ticket Insights"
+            emoji = "🎫"
+        elif "Engagement" in type_name:
+            subtitle = "Engagement Insights"
+            emoji = "📞"
+
+        summary = getattr(analysis, "summary", "") or getattr(analysis, "insight", "")
+        next_action = getattr(analysis, "next_action", "") or getattr(
+            analysis, "next_best_action", ""
+        )
+        reasoning = getattr(analysis, "reasoning", "") or getattr(
+            analysis, "next_action_reason", ""
         )
 
-    def build_ai_scoring(self, analysis: AIContactAnalysis) -> UnifiedCard:
+        secondary = []
+        if next_action:
+            secondary.append(("Next Action", next_action))
+        if reasoning:
+            secondary.append(("Reasoning", reasoning))
+
+        return UnifiedCard(
+            title="AI Insights",
+            subtitle=subtitle,
+            emoji=emoji,
+            content=summary,
+            secondary_content=secondary,
+        )
+
+    def build_ai_scoring(self, analysis: Any) -> UnifiedCard:
+        score = getattr(analysis, "score", "N/A")
+        reason = getattr(analysis, "score_reason", "No scoring data available.")
+
         return UnifiedCard(
             title="AI Score",
             subtitle="Scoring Analysis",
             emoji="📊",
             metrics=[
-                ("Score", str(analysis.score)),
+                ("Score", str(score)),
             ],
-            content=analysis.score_reason,
+            content=reason,
         )
 
     def build_ai_next_best_action(self, analysis: AIContactAnalysis) -> UnifiedCard:
@@ -493,14 +536,20 @@ class CardBuilder:
             UnifiedCard: The rendered IR.
 
         """
+        secondary = [
+            ("Health", analysis.health),
+            ("Next Action", analysis.next_action),
+        ]
+
+        if analysis.top_actions:
+            actions_text = "\n".join(f"• {action}" for action in analysis.top_actions)
+            secondary.append(("Top Next Best Actions for Contacts", actions_text))
+
         return UnifiedCard(
             title="Company Insights",
             emoji="🏢",
             content=analysis.summary,
-            secondary_content=[
-                ("Health", analysis.health),
-                ("Next Action", analysis.next_action),
-            ],
+            secondary_content=secondary,
         )
 
     def build_deal_ai(self, analysis: AIDealAnalysis) -> UnifiedCard:
@@ -513,14 +562,20 @@ class CardBuilder:
             UnifiedCard: The rendered IR.
 
         """
+        secondary = [
+            ("Risk", analysis.risk),
+            ("Next Action", analysis.next_action),
+        ]
+
+        if analysis.top_actions:
+            actions_text = "\n".join(f"• {action}" for action in analysis.top_actions)
+            secondary.append(("Top Next Best Actions for Contacts", actions_text))
+
         return UnifiedCard(
             title="Deal Insights",
             emoji="💰",
             content=analysis.summary,
-            secondary_content=[
-                ("Risk", analysis.risk),
-                ("Next Action", analysis.next_action),
-            ],
+            secondary_content=secondary,
         )
 
     def build_ticket(
@@ -572,7 +627,9 @@ class CardBuilder:
                     action_type="modal",
                     value=f"ai_recap:ticket:{obj['id']}",
                 ),
-            ],
+            ]
+            if is_pro
+            else [],
         )
 
     def build_task(
@@ -658,7 +715,9 @@ class CardBuilder:
                     action_type="modal",
                     value=f"add_note:task:{obj['id']}",
                 ),
-            ],
+            ]
+            if is_pro
+            else [],
         )
 
     def build_deals_list(self, deals: list[dict]) -> UnifiedCard:
@@ -919,9 +978,11 @@ class CardBuilder:
         | AIDealAnalysis
         | AITicketAnalysis
         | AITaskAnalysis
-        | AIConversationAnalysis,
+        | AIConversationAnalysis
+        | AIEngagementAnalysis,
         pipelines: list[dict[str, Any]] | None = None,
         task_context: dict[str, Any] | None = None,
+        *,
         is_pro: bool = False,
     ) -> UnifiedCard:
         """Description:

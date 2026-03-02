@@ -2,31 +2,54 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
-from app.core.exceptions import AIServiceError
 from app.core.logging import get_logger
-from app.utils.helpers import normalize_object_type
+from app.db.storage_service import StorageService
 from app.utils.parsers import to_int
 
 logger = get_logger("ai.service")
 
-
-# Scoring Constants
-VISIT_THRESHOLD_MODERATE = 5
-VISIT_THRESHOLD_HIGH = 10
-VISIT_THRESHOLD_VERY_HIGH = 15
-
-SCORE_HIGH_VISITS = 40
-SCORE_QUALIFIED_LIFECYCLE = 30
-SCORE_HAS_COMPANY = 10
-SCORE_HAS_EMAIL = 10
-MAX_SCORE = 100
+# ==========================================================
+# CONFIG
+# ==========================================================
 
 QUALIFIED_STAGES = {"marketingqualifiedlead", "salesqualifiedlead"}
 
 
-# AI analysis models
+@dataclass(frozen=True)
+class ScoringConfig:
+    visit_threshold_moderate: int = 5
+    visit_threshold_high: int = 10
+    visit_threshold_very_high: int = 15
+
+    weight_high_visit: int = 30
+    weight_moderate_visit: int = 15
+    weight_qualified_lifecycle: int = 25
+    weight_has_company: int = 10
+    weight_has_email: int = 10
+
+    weight_recency_bonus_high: int = 15
+    weight_recency_bonus_medium: int = 8
+    weight_recency_bonus_low: int = 3
+
+    weight_velocity_bonus: int = 15
+    weight_stage_stale_penalty: int = -15
+
+    max_score: int = 100
+
+    engagement_recent_bonus: int = 10
+    engagement_high_activity_bonus: int = 15
+    engagement_stale_penalty: int = -10
+    deal_recent_activity_risk_reduction: int = -15
+
+
+# ==========================================================
+# DATA MODELS
+# ==========================================================
+
+
 @dataclass(frozen=True)
 class AIContactAnalysis:
     insight: str
@@ -44,6 +67,7 @@ class AICompanyAnalysis:
     summary: str
     health: str
     next_action: str
+    top_actions: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +75,9 @@ class AIDealAnalysis:
     summary: str
     risk: str
     next_action: str
+    score: int
+    score_reason: str
+    top_actions: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -75,744 +102,682 @@ class AIConversationAnalysis:
 
 
 @dataclass(frozen=True)
+class AIEngagementAnalysis:
+    summary: str
+    engagement_type: str
+    next_action: str
+
+
+@dataclass(frozen=True)
 class AIThreadSummary:
     summary: str
     key_points: list[str]
     sentiment: str
 
 
-# Core AI Service
+# ==========================================================
+# SERVICE (STATELESS + MULTI-TENANT SAFE)
+# ==========================================================
+
+
 class AIService:
-    """Core AI service providing deterministic rules for HubSpot object analysis.
-
-    Utilizes scoring algorithms to evaluate contact engagement and quality,
-    generating actionable insights and next-best-action recommendations.
-    Supports intent detection for natural language queries.
-    """
-
     def __init__(self, corr_id: str) -> None:
-        self.deal_ai = AIDealService()
-        self.company_ai = AICompanyService()
-        self.ticket_ai = AITicketService()
-        self.task_ai = AITaskService()
+        self.storage = StorageService(corr_id)
 
-    def set_corr_id(self, corr_id: str) -> None:
-        """DEPRECATED: No longer needed with context-aware logging."""
-        pass
+    # ------------------------------------------------------
+    # CONFIG (NEVER STORED ON SELF)
+    # ------------------------------------------------------
 
-    # -----------------------------------------------------
-    # Normalization
-    # -----------------------------------------------------
-    def normalize_contact_props(self, props: dict[str, Any]) -> dict[str, Any]:
-        """Normalize numeric fields and ensure consistent types.
+    async def _get_workspace_config(self, workspace_id: str | None) -> ScoringConfig:
+        if not workspace_id:
+            return ScoringConfig()
 
-        Args:
-            props (dict[str, Any]): Raw HubSpot contact properties.
+        record = await self.storage.ensure_scoring_config(workspace_id)
 
-        Returns:
-            dict[str, Any]: Normalized properties with safe integer defaults.
+        return ScoringConfig(
+            visit_threshold_moderate=record.visit_threshold_moderate,
+            visit_threshold_high=record.visit_threshold_high,
+            visit_threshold_very_high=record.visit_threshold_very_high,
+            weight_high_visit=record.weight_high_visit,
+            weight_moderate_visit=record.weight_moderate_visit,
+            weight_qualified_lifecycle=record.weight_qualified_lifecycle,
+            weight_has_company=record.weight_has_company,
+            weight_has_email=record.weight_has_email,
+            weight_recency_bonus_high=record.weight_recency_bonus_high,
+            weight_recency_bonus_medium=record.weight_recency_bonus_medium,
+            weight_recency_bonus_low=record.weight_recency_bonus_low,
+            weight_velocity_bonus=record.weight_velocity_bonus,
+            weight_stage_stale_penalty=record.weight_stage_stale_penalty,
+            max_score=record.max_score,
+        )
 
-        """
-        numeric_fields = [
-            "hs_analytics_num_visits",
-            "num_associated_deals",
-            "hs_lifecyclestage_lead_score",
-        ]
+    # ------------------------------------------------------
+    # FEATURE EXTRACTION
+    # ------------------------------------------------------
 
-        for field in numeric_fields:
-            props[field] = to_int(props.get(field)) or 0
-
-        return props
-
-    # -----------------------------------------------------
-    # Feature extraction
-    # -----------------------------------------------------
     def _extract_features(self, props: Mapping[str, Any]) -> dict[str, Any]:
-        """Extract normalized, typed features for scoring.
-
-        Args:
-            props (Mapping[str, Any]): Normalized contact properties.
-
-        Returns:
-            dict[str, Any]: A dictionary containing extracted features (visits, etc).
-
-        """
-        props = self.normalize_contact_props(dict(props))
-
-        visits = props.get("hs_analytics_num_visits", 0)
-        lifecycle = (props.get("lifecyclestage") or "").lower()
-        company = props.get("company")
-        email = props.get("email")
+        props = dict(props)
+        props["hs_analytics_num_visits"] = (
+            to_int(props.get("hs_analytics_num_visits")) or 0
+        )
 
         return {
             "props": props,
-            "visits": visits,
-            "lifecycle": lifecycle,
-            "has_company": bool(company),
-            "has_email": bool(email),
+            "visits": props["hs_analytics_num_visits"],
+            "lifecycle": (props.get("lifecyclestage") or "").lower(),
+            "has_company": bool(props.get("company")),
+            "has_email": bool(props.get("email")),
         }
 
-    # -----------------------------------------------------
-    # Insight generation
-    # -----------------------------------------------------
-    def generate_contact_insight(self, contact: Mapping[str, Any]) -> str:
-        """Generates a human-readable insight based on contact engagement.
+    # ------------------------------------------------------
+    # SCORING ENGINE
+    # ------------------------------------------------------
 
-        Args:
-            contact (Mapping[str, Any]): The HubSpot contact object.
+    def _recency_bonus(self, props: Mapping[str, Any], cfg: ScoringConfig) -> int:
+        last = props.get("lastmodifieddate")
+        if not last:
+            return 0
+        try:
+            dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+            days = (datetime.now(UTC) - dt).days
+            if days <= 2:  # noqa: PLR2004
+                return cfg.weight_recency_bonus_high
+            if days <= 7:  # noqa: PLR2004
+                return cfg.weight_recency_bonus_medium
+            if days <= 30:  # noqa: PLR2004
+                return cfg.weight_recency_bonus_low
+        except Exception:
+            return 0
+        return 0
 
-        Returns:
-            str: A descriptive insight string.
+    def _velocity_bonus(self, props: Mapping[str, Any], cfg: ScoringConfig) -> int:
+        recent = to_int(props.get("recent_visits_7d")) or 0
+        lifetime = to_int(props.get("hs_analytics_num_visits")) or 0
+        if lifetime == 0:
+            return 0
+        if recent >= 3 and (recent / lifetime) >= 0.5:  # noqa: PLR2004
+            return cfg.weight_velocity_bonus
+        return 0
 
-        """
-        props = self.normalize_contact_props(contact.get("properties") or {})
-
-        firstname = props.get("firstname") or "This contact"
-        company = props.get("company") or "Unknown Company"
-        visits = props.get("hs_analytics_num_visits", 0)
-
-        insight = f"💡 {firstname} works at {company}."
-
-        if visits > VISIT_THRESHOLD_MODERATE:
-            insight += f" They are highly engaged with {visits} visits."
-        else:
-            insight += " Engagement is low."
-
-        return insight
-
-    # -----------------------------------------------------
-    # Scoring
-    # -----------------------------------------------------
-    def generate_score(self, props: Mapping[str, Any]) -> int:
-        """Calculates a priority score for the contact.
-
-        Args:
-            props (Mapping[str, Any]): Normalized contact properties.
-
-        Returns:
-            int: A score between 0 and 100.
-
-        """
+    def generate_score(
+        self,
+        props: Mapping[str, Any],
+        cfg: ScoringConfig,
+    ) -> int:
         f = self._extract_features(props)
         score = 0
 
-        if f["visits"] > VISIT_THRESHOLD_HIGH:
-            score += SCORE_HIGH_VISITS
+        if f["visits"] >= cfg.visit_threshold_very_high:
+            score += cfg.weight_high_visit
+        elif f["visits"] >= cfg.visit_threshold_high:
+            score += int(cfg.weight_high_visit * 0.8)
+        elif f["visits"] >= cfg.visit_threshold_moderate:
+            score += cfg.weight_moderate_visit
 
         if f["lifecycle"] in QUALIFIED_STAGES:
-            score += SCORE_QUALIFIED_LIFECYCLE
+            score += cfg.weight_qualified_lifecycle
 
         if f["has_company"]:
-            score += SCORE_HAS_COMPANY
+            score += cfg.weight_has_company
 
         if f["has_email"]:
-            score += SCORE_HAS_EMAIL
+            score += cfg.weight_has_email
 
-        return min(score, MAX_SCORE)
+        score += self._recency_bonus(f["props"], cfg)
+        score += self._velocity_bonus(f["props"], cfg)
 
-    def generate_score_reason(self, props: Mapping[str, Any], score: int) -> str:
-        """Generates a human-readable explanation for the calculated score.
+        return max(0, min(score, cfg.max_score))
 
-        Args:
-            props (Mapping[str, Any]): Normalized contact properties.
-            score (int): The calculated score.
+    def _stage_staleness_penalty(
+        self,
+        props: Mapping[str, Any],
+        cfg: ScoringConfig,
+    ) -> int:
+        entered = props.get("hs_date_entered_stage")
+        if not entered:
+            return 0
+        try:
+            dt = datetime.fromisoformat(entered.replace("Z", "+00:00"))
+            if (datetime.now(UTC) - dt).days > 30:  # noqa: PLR2004
+                return cfg.weight_stage_stale_penalty
+        except Exception:
+            return 0
+        return 0
 
-        Returns:
-            str: A comma-separated list of scoring factors.
-
+    def _extract_engagement_datetime(
+        self,
+        engagement: Mapping[str, Any],
+    ) -> datetime | None:
+        """Safely extract a datetime from any HubSpot engagement shape.
+        Supports:
+        - CRM v3 (properties.hs_timestamp)
+        - Meetings (hs_meeting_start_time)
+        - createdate / hs_createdate
+        - Legacy engagements API (engagement.timestamp)
+        - Milliseconds and seconds
         """
-        f = self._extract_features(props)
-        reasons: list[str] = []
+        ts = None
 
-        if f["visits"] > VISIT_THRESHOLD_HIGH:
-            reasons.append("High engagement")
-        elif f["visits"] > VISIT_THRESHOLD_MODERATE:
-            reasons.append("Moderate engagement")
-        else:
-            reasons.append("Low engagement")
+        # CRM v3 structure
+        props = engagement.get("properties") or {}
+        ts = (
+            props.get("hs_timestamp")
+            or props.get("hs_meeting_start_time")
+            or props.get("createdate")
+            or props.get("hs_createdate")
+        )
 
-        if f["lifecycle"] in QUALIFIED_STAGES:
-            reasons.append("Qualified lifecycle stage")
+        # Legacy engagement API
+        if not ts and "engagement" in engagement:
+            ts = engagement.get("engagement", {}).get("timestamp")
 
-        if f["has_company"]:
-            reasons.append("Has company association")
+        if not ts:
+            return None
 
-        if f["has_email"]:
-            reasons.append("Valid email present")
+        try:
+            # Milliseconds or seconds
+            if isinstance(ts, int | float):
+                # Heuristic: ms are 13 digits
+                if ts > 10_000_000_000:  # noqa: PLR2004
+                    return datetime.fromtimestamp(ts / 1000, tz=UTC)
+                return datetime.fromtimestamp(ts, tz=UTC)
 
-        return ", ".join(reasons) or "Low engagement"
+            # ISO string
+            return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
 
-    # -----------------------------------------------------
-    # Next best action
-    # -----------------------------------------------------
-    def next_best_action(self, props: Mapping[str, Any]) -> str:
-        """Determines the single most important next action for this contact.
+        except Exception:
+            return None
 
-        Args:
-            props (Mapping[str, Any]): Normalized contact properties.
+    def _engagement_metrics(
+        self,
+        engagements: Sequence[Mapping[str, Any]] | None,
+    ) -> dict[str, Any]:
+        if not engagements:
+            return {
+                "count_30d": 0,
+                "recent": False,
+                "last_activity_days": None,
+            }
 
-        Returns:
-            str: A recommended action string with an emoji.
+        now = datetime.now(UTC)
+        count_30d = 0
+        last_days = None
 
-        """
-        f = self._extract_features(props)
+        for e in engagements:
+            dt = self._extract_engagement_datetime(e)
 
-        if f["lifecycle"] == "lead" and f["visits"] > VISIT_THRESHOLD_MODERATE:
-            return "📞 Reach out — this lead is warming up."
+            if not dt:
+                continue
+            days = (now - dt).days
 
-        if f["lifecycle"] == "marketingqualifiedlead":
-            return "🤝 Hand off to sales — strong MQL."
+            if last_days is None or days < last_days:
+                last_days = days
 
-        if f["lifecycle"] == "salesqualifiedlead":
-            return "📅 Schedule a discovery call."
+            if days <= 30:  # noqa: PLR2004
+                count_30d += 1
 
-        if f["visits"] > VISIT_THRESHOLD_VERY_HIGH:
-            return "🔥 High engagement — follow up immediately."
+        return {
+            "count_30d": count_30d,
+            "recent": last_days is not None and last_days <= 7,  # noqa: PLR2004
+            "last_activity_days": last_days,
+        }
 
-        return "📝 Add a note or send a follow-up email."
+    def _format_engagements(
+        self, engagements: Sequence[Mapping[str, Any]] | None
+    ) -> str:
+        if not engagements:
+            return ""
 
-    def generate_next_action(self, props: Mapping[str, Any]) -> str:
-        return self.next_best_action(props)
+        lines = ["\n*Recent Engagements:*"]
 
-    def generate_next_action_reason(self, props: Mapping[str, Any]) -> str:
-        f = self._extract_features(props)
+        sorted_engs = []
+        for e in engagements:
+            dt = self._extract_engagement_datetime(e)
+            if dt:
+                sorted_engs.append((dt, e))
 
-        if f["lifecycle"] == "lead" and f["visits"] > VISIT_THRESHOLD_MODERATE:
-            return "Lead is warming up"
-        if f["lifecycle"] == "marketingqualifiedlead":
-            return "Strong MQL"
-        if f["lifecycle"] == "salesqualifiedlead":
-            return "SQL ready for call"
-        if f["visits"] > VISIT_THRESHOLD_VERY_HIGH:
-            return "High engagement"
+        sorted_engs.sort(key=lambda x: x[0], reverse=True)
 
-        return "General follow-up recommended"
+        for dt, e in sorted_engs[:5]:
+            etype = e.get("_engagement_type", "")
+            props = e.get("properties") or {}
 
-    # -----------------------------------------------------
-    # Summary + reasoning
-    # -----------------------------------------------------
-    def generate_summary(self, props: Mapping[str, Any]) -> str:
-        """Generates a concise summary of the contact and their company.
+            dt_str = dt.strftime("%B %d, %Y, at %I:%M %p")
 
-        Args:
-            props (Mapping[str, Any]): Normalized contact properties.
+            if etype == "meetings":
+                title = props.get("hs_meeting_title", "Meeting")
+                lines.append(f"• 📅 *Meeting*: Scheduled for {dt_str} about '{title}'")
+            elif etype == "emails":
+                subject = props.get("hs_email_subject", "Email")
+                lines.append(
+                    f"• ✉️ *Email*: Logged on {dt_str} with subject '{subject}'"
+                )
+            elif etype == "calls":
+                title = props.get("hs_call_title", "Call")
+                lines.append(f"• 📞 *Call*: Took place on {dt_str} regarding '{title}'")
+            elif etype == "tasks":
+                subject = props.get("hs_task_subject", "Task")
+                lines.append(f"• ✅ *Task*: Created on {dt_str} to '{subject}'")
+            else:
+                lines.append(f"• 📝 *Activity*: Logged on {dt_str}")
 
-        Returns:
-            str: A summary sentence.
+        return "\n".join(lines)
 
-        """
-        f = self._extract_features(props)
-        firstname = f["props"].get("firstname") or "This contact"
-        company = f["props"].get("company") or "Unknown company"
+    def _format_associated_objects(
+        self, associated_objects: dict[str, list[dict[str, Any]]] | None
+    ) -> str:
+        if not associated_objects:
+            return ""
 
-        return f"{firstname} from {company} has {f['visits']} recent visits."
+        lines = []
 
-    def generate_reasoning(self, props: Mapping[str, Any]) -> str:
-        """Provides detailed technical reasoning for the AI's conclusions.
+        contacts = associated_objects.get("contacts")
+        if contacts:
+            lines.append("\n*Associated Contacts:*")
+            for c in contacts[:5]:
+                props = c.get("properties") or {}
+                fname = props.get("firstname", "")
+                lname = props.get("lastname", "")
+                email = props.get("email", "No Email")
+                name = f"{fname} {lname}".strip() or "Unknown Contact"
+                lines.append(f"• 👤 {name} ({email})")
 
-        Args:
-            props (Mapping[str, Any]): Normalized contact properties.
+        companies = associated_objects.get("companies")
+        if companies:
+            lines.append("\n*Associated Companies:*")
+            for c in companies[:5]:
+                props = c.get("properties") or {}
+                name = props.get("name", "Unknown Company")
+                domain = props.get("domain", "")
+                lines.append(f"• 🏢 {name}" + (f" ({domain})" if domain else ""))
 
-        Returns:
-            str: A detailed string combining multiple engagement factors.
+        deals = associated_objects.get("deals")
+        if deals:
+            lines.append("\n*Associated Deals:*")
+            for d in deals[:5]:
+                props = d.get("properties") or {}
+                name = props.get("dealname", "Unknown Deal")
+                stage = props.get("dealstage", "")
+                lines.append(f"• 🤝 {name}" + (f" (Stage: {stage})" if stage else ""))
 
-        """
-        f = self._extract_features(props)
-        reasons: list[str] = []
+        tickets = associated_objects.get("tickets")
+        if tickets:
+            lines.append("\n*Associated Tickets:*")
+            for t in tickets[:5]:
+                props = t.get("properties") or {}
+                subject = props.get("subject", "Unknown Ticket")
+                priority = props.get("hs_ticket_priority", "Normal")
+                lines.append(f"• 🎟️ {subject} (Priority: {priority})")
 
-        if f["visits"] > VISIT_THRESHOLD_HIGH:
-            reasons.append("High engagement based on recent visits")
-        elif f["visits"] > VISIT_THRESHOLD_MODERATE:
-            reasons.append("Moderate engagement")
-        else:
-            reasons.append("Low engagement")
+        return "\n".join(lines)
 
-        if f["lifecycle"] in QUALIFIED_STAGES:
-            reasons.append("Qualified lifecycle stage")
+    # ======================================================
+    # POLYMORPHIC ENTRY
+    # ======================================================
 
-        if f["has_company"]:
-            reasons.append("Associated with a company")
-
-        if f["has_email"]:
-            reasons.append("Valid email present")
-
-        return ". ".join(reasons) + "."
-
-    # Analysis entry points
-    async def analyze_polymorphic(
-        self, obj: Mapping[str, Any], object_type: str
+    async def analyze_polymorphic(  # noqa: PLR0911
+        self,
+        obj: Mapping[str, Any],
+        object_type: str,
+        *,
+        engagements: Sequence[Mapping[str, Any]] | None = None,
+        associated_objects: dict[str, list[dict[str, Any]]] | None = None,
     ) -> (
         AIContactAnalysis
         | AICompanyAnalysis
         | AIDealAnalysis
         | AITicketAnalysis
         | AITaskAnalysis
-        | AITicketAnalysis
-        | AITaskAnalysis
         | AIConversationAnalysis
+        | AIEngagementAnalysis
+        | None
     ):
-        """Standardized entry point for analyzing any HubSpot object.
+        normalized = object_type.lower()
 
-        Args:
-            obj (Mapping[str, Any]): The raw HubSpot object data.
-            object_type (str): The logical type of the object (e.g., "contact", "deal").
-
-        Returns:
-            Union[AIContactAnalysis, ...]: A type-specific analysis object.
-
-        """
-        try:
-            # 1. Handle None or non-mapping inputs gracefully
-            if not isinstance(obj, Mapping):
-                logger.warning(
-                    "Invalid input for analysis: %s (type=%s)", obj, type(obj)
-                )
-                # Return a safe fallback with "unavailable" insight
-                return AIContactAnalysis(
-                    insight="Analysis unavailable due to invalid input.",
-                    score=0,
-                    score_reason="Invalid input.",
-                    next_best_action="Check input data format.",
-                    next_action="Review log for details.",
-                    next_action_reason="Input data was not a valid mapping.",
-                    summary="Analysis failed.",
-                    reasoning="The provided object was None or not a dictionary.",
-                )
-
-            normalized_type = normalize_object_type(object_type)
-
-            handler_map = {
-                "contact": self.analyze_contact,
-                "lead": self.analyze_contact,
-                "company": self.analyze_company,
-                "deal": self.analyze_deal,
-                "ticket": self.analyze_ticket,
-                "task": self.analyze_task,
-                "conversation": self.analyze_conversation,
-                "thread": self.analyze_conversation,
-            }
-
-            handler = handler_map.get(normalized_type)
-            if not handler:
-                logger.warning(
-                    "Unknown object_type=%s, falling back to contact analysis",
-                    object_type,
-                )
-                handler = self.analyze_contact
-
-            return await handler(obj)
-        except AIServiceError as exc:
-            logger.error("AI service failure for %s: %s", object_type, exc)
-            raise
-        except Exception as exc:
-            logger.error("Unexpected AI analysis error for %s: %s", object_type, exc)
-            raise AIServiceError(f"AI analysis failed: {str(exc)}") from exc
-
-    async def analyze_contact(self, obj: Mapping[str, Any]) -> AIContactAnalysis:
-        """Performs deep analysis on a Contact object.
-
-        Args:
-            obj (Mapping[str, Any]): The HubSpot contact object.
-
-        Returns:
-            AIContactAnalysis: Analysis containing score, insights, and actions.
-
-        """
-        props = self.normalize_contact_props(dict(obj.get("properties") or {}))
-        score = self.generate_score(props)
-
-        return AIContactAnalysis(
-            insight=self.generate_contact_insight(obj),
-            score=score,
-            score_reason=self.generate_score_reason(props, score),
-            next_best_action=self.next_best_action(props),
-            next_action=self.generate_next_action(props),
-            next_action_reason=self.generate_next_action_reason(props),
-            summary=self.generate_summary(props),
-            reasoning=self.generate_reasoning(props),
-        )
-
-    async def analyze_deal(self, deal: Mapping[str, Any]) -> AIDealAnalysis:
-        """Analyzes a Deal using specialized logic.
-
-        Args:
-            deal (Mapping[str, Any]): The HubSpot deal object.
-
-        Returns:
-            AIDealAnalysis: Structured deal insights.
-
-        """
-        return self.deal_ai.analyze_deal(deal)
-
-    async def analyze_company(self, company: Mapping[str, Any]) -> AICompanyAnalysis:
-        """Analyzes a Company using specialized logic.
-
-        Args:
-            company (Mapping[str, Any]): The HubSpot company object.
-
-        Returns:
-            AICompanyAnalysis: Structured company health insights.
-
-        """
-        return self.company_ai.analyze_company(company)
-
-    async def analyze_lead(self, lead: Mapping[str, Any]) -> AIContactAnalysis:
-        """Leads use Contact analysis logic."""
-        return await self.analyze_contact(lead)
-
-    async def analyze_ticket(self, ticket: Mapping[str, Any]) -> AITicketAnalysis:
-        """Analyzes a Ticket using specialized logic."""
-        return self.ticket_ai.analyze_ticket(ticket)
-
-    async def analyze_task(self, task: Mapping[str, Any]) -> AITaskAnalysis:
-        """Analyzes a Task using specialized logic."""
-        return self.task_ai.analyze_task(task)
-
-    async def analyze_conversation(
-        self, thread: Mapping[str, Any]
-    ) -> AIConversationAnalysis:
-        """Analyzes a Conversation Thread."""
-        # Thread object: id, status, messages (list), etc.
-        t_id = thread.get("id")
-        status = thread.get("status") or "OPEN"
-        messages = thread.get("messages", [])
-        msg_count = len(messages)
-
-        last_msg = messages[0].get("text", "") if messages else "No messages"
-        if len(last_msg) > 50:  # noqa: PLR2004
-            last_msg = last_msg[:47] + "..."
-
-        summary = (
-            f"Conversation #{t_id} ({status}) • {msg_count} messages. Last: {last_msg}"
-        )
-
-        next_action = (
-            "Reply to visitor." if status != "CLOSED" else "Review closed conversation."
-        )
-
-        return AIConversationAnalysis(
-            summary=summary,
-            status=status,
-            next_action=next_action,
-        )
-
-    # -----------------------------------------------------
-    # Multi-object summarization
-    # -----------------------------------------------------
-    def summarize_results(self, objects: Sequence[Mapping[str, Any]]) -> str:
-        """Generates a summary string for a collection of search results.
-
-        Args:
-            objects (Sequence[Mapping[str, Any]]): A list of HubSpot records.
-
-        Returns:
-            str: A formatted summary string for Slack.
-
-        """
-        if not objects:
-            return "No matching HubSpot records found."
-
-        contacts = sum(1 for o in objects if "firstname" in (o.get("properties") or {}))
-        leads = sum(
-            1
-            for o in objects
-            if (o.get("properties") or {}).get("lifecyclestage") == "lead"
-        )
-        deals = sum(1 for o in objects if "dealname" in (o.get("properties") or {}))
-
-        parts: list[str] = []
-        if contacts:
-            parts.append(f"{contacts} contact(s)")
-        if leads:
-            parts.append(f"{leads} lead(s)")
-        if deals:
-            parts.append(f"{deals} deal(s)")
-
-        summary = " • ".join(parts)
-        return f"🔎 *Summary:* Found {summary} matching your search."
-
-    # -----------------------------------------------------
-    # Top recommended actions
-    # -----------------------------------------------------
-    def top_recommended_actions(
-        self,
-        objects: Sequence[Mapping[str, Any]],
-    ) -> list[str]:
-        actions: list[tuple[int, str]] = []
-
-        actions: list[tuple[int, str]] = []
-
-        for obj in objects:
-            props = self.normalize_contact_props(dict(obj.get("properties") or {}))
-            nba = self.next_best_action(props)
-            score = self.generate_score(props)
-            actions.append((score, nba))
-
-        actions.sort(key=lambda x: x[0], reverse=True)
-
-        seen: set[str] = set()
-        top: list[str] = []
-
-        for _, action in actions:
-            if action not in seen:
-                top.append(action)
-                seen.add(action)
-            if len(top) == 3:  # noqa: PLR2004
-                break
-
-        return top
-
-    # -----------------------------------------------------
-    # Intent detection
-    # -----------------------------------------------------
-    # -----------------------------------------------------
-    # Thread Summarization
-    # -----------------------------------------------------
-    async def summarize_thread(self, messages: list[dict[str, Any]]) -> AIThreadSummary:
-        """Description:
-            Generates an AI-powered summary of a Slack thread.
-            Utilizes heuristics for key point extraction and sentiment analysis.
-
-        Args:
-            messages (list[dict[str, Any]]): List of Slack message dictionaries.
-
-        Returns:
-            AIThreadSummary: Structured summary with key points and sentiment.
-
-        """
-        if not messages:
-            return AIThreadSummary(
-                summary="No messages to summarize.", key_points=[], sentiment="Neutral"
+        # HubSpot numeric object types support
+        if normalized in {"contact", "0-1", "lead"}:
+            return await self.analyze_contact(
+                obj,
+                engagements=engagements,
+                associated_objects=associated_objects,
             )
 
-        # 1. Extract texts
-        texts = [m.get("text", "") for m in messages if m.get("text")]
-        combined_text = " ".join(texts)
+        if normalized in {"company", "0-2"}:
+            return await self.analyze_company(
+                obj,
+                associated_objects=associated_objects,
+            )
 
-        # 2. Heuristic: Determine Sentiment
-        positive_words = {
-            "good",
-            "great",
-            "excellent",
-            "fixed",
-            "resolved",
-            "thanks",
-            "happy",
-        }
-        negative_words = {
-            "bug",
-            "error",
-            "failed",
-            "broken",
-            "issue",
-            "problem",
-            "urgent",
-        }
+        if normalized in {"deal", "0-3"}:
+            return await self.analyze_deal(
+                obj,
+                associated_objects=associated_objects,
+                engagements=engagements,
+            )
 
-        pos_count = sum(1 for word in positive_words if word in combined_text.lower())
-        neg_count = sum(1 for word in negative_words if word in combined_text.lower())
+        if normalized in {"ticket", "0-5"}:
+            return await self.analyze_ticket(obj)
 
-        sentiment = "Neutral"
-        if pos_count > neg_count:
-            sentiment = "Positive"
-        elif neg_count > pos_count:
-            sentiment = "Negative"
+        if normalized in {"task"}:
+            return await self.analyze_task(obj)
 
-        # 3. Heuristic: Extract Key Points (Messages with question marks or
-        # exclamation marks)
-        key_points = []
-        for text in texts:
-            if "?" in text or "!" in text or len(text) > 100:  # noqa: PLR2004
-                clean_point = text.strip().replace("\n", " ")
-                MAX_POINT_LEN = 80
-                key_points.append(
-                    clean_point[:MAX_POINT_LEN] + "..."
-                    if len(clean_point) > MAX_POINT_LEN
-                    else clean_point
-                )
+        if normalized in {"conversation"}:
+            return await self.analyze_conversation(obj)
 
-        # 4. Generate Summary
-        msg_count = len(messages)
-        MAX_FIRST_MSG_LEN = 100
-        first_msg = (
-            texts[0][:MAX_FIRST_MSG_LEN] + "..."
-            if texts and len(texts[0]) > MAX_FIRST_MSG_LEN
-            else (texts[0] if texts else "")
+        if normalized in {"call", "meeting", "email", "note"}:
+            return await self.analyze_engagement(obj)
+
+        raise ValueError(f"Unsupported object type: {object_type}")
+
+    # ======================================================
+    # CONTACT
+    # ======================================================
+
+    async def analyze_contact(
+        self,
+        obj: Mapping[str, Any],
+        engagements: Sequence[Mapping[str, Any]] | None = None,
+        associated_objects: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> AIContactAnalysis:
+        props = obj.get("properties") or {}
+        workspace_id = obj.get("workspace_id")
+
+        cfg = await self._get_workspace_config(workspace_id)
+
+        score = self.generate_score(props, cfg)
+
+        metrics = self._engagement_metrics(engagements)
+
+        # Engagement influence
+        if metrics["recent"]:
+            score += cfg.engagement_recent_bonus
+
+        if metrics["count_30d"] >= 5:  # noqa: PLR2004
+            score += cfg.engagement_high_activity_bonus
+
+        last_act = metrics["last_activity_days"]
+        if last_act is not None and last_act > 30:  # noqa: PLR2004
+            score += cfg.engagement_stale_penalty
+
+        score = max(0, min(score, cfg.max_score))
+
+        reasoning = self._contact_reasoning(props, cfg)
+        summary = self._contact_summary(props)
+        next_action = self._next_action(props)
+
+        engagements_text = self._format_engagements(engagements)
+        contacts_text = self._format_associated_objects(associated_objects)
+        insight = summary + engagements_text + contacts_text
+
+        return AIContactAnalysis(
+            insight=insight,
+            score=score,
+            score_reason=reasoning,
+            next_best_action=next_action,
+            next_action=next_action,
+            next_action_reason="Adjusted for engagement behavior.",
+            summary=summary,
+            reasoning=reasoning,
         )
-        summary_text = (
-            f"Thread with {msg_count} messages starting with: '{first_msg}'. "
-            f"Overall sentiment appears {sentiment}."
+
+    def _contact_summary(self, props: Mapping[str, Any]) -> str:
+        return (
+            f"{props.get('firstname', 'Contact')} at "
+            f"{props.get('company', 'Unknown company')} "
+            f"has {props.get('hs_analytics_num_visits', 0)} total visits."
         )
 
-        return AIThreadSummary(
-            summary=summary_text,
-            key_points=key_points[:5],
-            sentiment=sentiment,
+    def _contact_reasoning(
+        self,
+        props: Mapping[str, Any],
+        cfg: ScoringConfig,
+    ) -> str:
+        f = self._extract_features(props)
+        reasons = []
+
+        if f["visits"] >= cfg.visit_threshold_high:
+            reasons.append("Strong engagement")
+        elif f["visits"] >= cfg.visit_threshold_moderate:
+            reasons.append("Moderate engagement")
+        else:
+            reasons.append("Low engagement")
+
+        if f["lifecycle"] in QUALIFIED_STAGES:
+            reasons.append("Qualified lifecycle stage")
+
+        if f["has_company"] and f["has_email"]:
+            reasons.append("Complete profile")
+
+        return ", ".join(reasons)
+
+    def _next_action(self, props: Mapping[str, Any]) -> str:
+        f = self._extract_features(props)
+
+        if f["lifecycle"] == "lead" and f["visits"] >= 5:  # noqa: PLR2004
+            return "Reach out — engagement increasing."
+
+        if f["lifecycle"] == "salesqualifiedlead":
+            return "Schedule discovery call."
+
+        if f["visits"] >= 15:  # noqa: PLR2004
+            return "High intent — prioritize follow-up."
+
+        return "Add follow-up task."
+
+    # ======================================================
+    # COMPANY
+    # ======================================================
+
+    async def analyze_company(
+        self,
+        company: Mapping[str, Any],
+        associated_objects: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> AICompanyAnalysis:
+        props = company.get("properties") or {}
+        visits = to_int(props.get("hs_analytics_num_visits")) or 0
+        health = "Healthy" if visits > 10 else "Needs Attention"  # noqa: PLR2004
+
+        top = None
+        # Dynamically pull recommended actions if there are
+        # contacts inside the associated objects.
+        if associated_objects and "contacts" in associated_objects:
+            top = await self.top_recommended_actions(
+                associated_objects["contacts"],
+                company.get("workspace_id"),
+            )
+
+        summary = f"{props.get('name', 'Company')} with {visits} visits"
+        contacts_text = self._format_associated_objects(associated_objects)
+        summary += contacts_text
+
+        return AICompanyAnalysis(
+            summary=summary,
+            health=health,
+            next_action="Assign account manager.",
+            top_actions=top,
         )
 
-    def detect_intent(self, query: str) -> str:
-        """Detects the primary CRM object intent from a natural language query.
+    # ======================================================
+    # DEAL
+    # ======================================================
 
-        Args:
-            query (str): The user's query string.
-
-        Returns:
-            str: The logical object type detected (e.g., "deal", "ticket").
-
-        """
-        q = query.lower()
-
-        intent_map = {
-            "deal": ["deal", "renewal", "contract", "pipeline", "amount"],
-            "lead": ["lead", "mql", "sql", "prospect"],
-            "ticket": ["ticket", "issue", "bug", "support", "incident"],
-            "task": ["task", "todo", "follow-up", "reminder", "action item"],
-        }
-
-        for intent, keywords in intent_map.items():
-            if any(k in q for k in keywords):
-                return intent
-
-        return "contact"
-
-
-# Deal-specific AI Service
-class AIDealService:
-    def analyze_deal(self, deal: Mapping[str, Any]) -> AIDealAnalysis:
-        """Provides structural analysis for HubSpot Deals.
-
-        Args:
-            deal (Mapping[str, Any]): Raw deal data.
-
-        Returns:
-            AIDealAnalysis: Summary, risk assessment, and next actions.
-
-        """
+    async def analyze_deal(
+        self,
+        deal: Mapping[str, Any],
+        associated_objects: dict[str, list[dict[str, Any]]] | None = None,
+        engagements: Sequence[Mapping[str, Any]] | None = None,
+    ) -> AIDealAnalysis:
         props = deal.get("properties") or {}
-        name = props.get("dealname") or "This deal"
-        amount = props.get("amount")
-        stage = props.get("dealstage") or "Unknown stage"
+        workspace_id = deal.get("workspace_id")
+        cfg = await self._get_workspace_config(workspace_id)
 
-        summary = f"{name} in stage '{stage}'"
-        if amount:
-            summary += f" with value {amount}"
+        score = 50 + self._stage_staleness_penalty(props, cfg)
+
+        metrics = self._engagement_metrics(engagements)
+
+        # Reduce risk if recent engagement exists
+        if metrics["recent"]:
+            score += cfg.deal_recent_activity_risk_reduction
+
+        last_act = metrics["last_activity_days"]
+        if last_act is not None and last_act > 30:  # noqa: PLR2004
+            score += 10  # increase risk
+
+        stage = (props.get("dealstage") or "").lower()
 
         if stage.startswith("closedlost"):
             risk = "Lost"
-            next_action = "Review loss reasons and update notes."
+            next_action = "Review loss reasons."
         elif stage.startswith("closedwon"):
             risk = "Won"
-            next_action = "Ensure handoff to delivery / CS."
+            next_action = "Handoff to onboarding."
         else:
             risk = "Open"
-            next_action = "Schedule next touchpoint with decision maker."
+            next_action = "Ensure next meeting scheduled."
 
-        return AIDealAnalysis(summary=summary, risk=risk, next_action=next_action)
+        summary = f"{props.get('dealname', 'Deal')} in stage '{stage}'"
 
+        objs_text = self._format_associated_objects(associated_objects)
+        engagements_text = self._format_engagements(engagements)
 
-# Company-specific AI Service
-class AICompanyService:
-    def analyze_company(self, company: Mapping[str, Any]) -> AICompanyAnalysis:
-        """Analyzes company health based on associated records.
+        summary += objs_text
+        summary += engagements_text
 
-        Args:
-            company (Mapping[str, Any]): Raw company data.
-
-        Returns:
-            AICompanyAnalysis: Health status and strategic next actions.
-
-        """
-        props = company.get("properties") or {}
-        name = props.get("name") or "This company"
-        num_contacts = int(props.get("num_associated_contacts", 0) or 0)
-        num_deals = int(props.get("num_associated_deals", 0) or 0)
-
-        summary = f"{name} with {num_contacts} contacts and {num_deals} deals."
-
-        if num_deals == 0:
-            health = "Dormant"
-            next_action = "Identify opportunities and create first deal."
-        if num_deals == 0:
-            health = "Dormant"
-            next_action = "Identify opportunities and create first deal."
-        elif num_deals > VISIT_THRESHOLD_MODERATE:
-            health = "Strategic"
-            next_action = "Review account plan and upsell opportunities."
-        else:
-            health = "Active"
-            next_action = "Schedule an account review."
-
-        return AICompanyAnalysis(
-            summary=summary, health=health, next_action=next_action
+        return AIDealAnalysis(
+            summary=summary,
+            risk=risk,
+            next_action=next_action,
+            score=max(0, min(score, 100)),
+            score_reason="Stage + engagement activity considered.",
+            top_actions=None,
         )
 
+    # ======================================================
+    # TICKET
+    # ======================================================
 
-# Ticket-specific AI Service
-class AITicketService:
-    def analyze_ticket(self, ticket: Mapping[str, Any]) -> AITicketAnalysis:
-        """Evaluates ticket urgency and assignment needs.
-
-        Args:
-            ticket (Mapping[str, Any]): Raw ticket data.
-
-        Returns:
-            AITicketAnalysis: Urgency and triage recommendations.
-
-        """
+    async def analyze_ticket(
+        self,
+        ticket: Mapping[str, Any],
+        associated_objects: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> AITicketAnalysis:
         props = ticket.get("properties") or {}
-        subject = props.get("subject") or "This ticket"
         priority = (props.get("hs_ticket_priority") or "").upper()
-        stage = props.get("hs_pipeline_stage") or "Unknown"
-
-        summary = f"{subject} — Priority: {priority or 'Unset'}, Stage: {stage}"
 
         if priority == "HIGH":
             urgency = "Critical"
-            next_action = "Assign immediately and begin resolution."
+            next_action = "Assign immediately."
         elif priority == "MEDIUM":
             urgency = "Moderate"
-            next_action = "Triage and assign to appropriate team."
+            next_action = "Triage and assign."
         else:
             urgency = "Low"
-            next_action = "Review during next sprint planning."
+            next_action = "Review in next cycle."
+
+        summary = f"{props.get('subject', 'Ticket')} — Priority: {priority}"
+        objs_text = self._format_associated_objects(associated_objects)
+        summary += objs_text
 
         return AITicketAnalysis(
-            summary=summary, urgency=urgency, next_action=next_action
+            summary=summary,
+            urgency=urgency,
+            next_action=next_action,
         )
 
+    # ======================================================
+    # TASK
+    # ======================================================
 
-# Task-specific AI Service
-class AITaskService:
-    def analyze_task(self, task: Mapping[str, Any]) -> AITaskAnalysis:
-        """Assesses task status and priority.
-
-        Args:
-            task (Mapping[str, Any]): Raw task data.
-
-        Returns:
-            AITaskAnalysis: Status label and immediate next actions.
-
-        """
+    async def analyze_task(
+        self,
+        task: Mapping[str, Any],
+    ) -> AITaskAnalysis:
         props = task.get("properties") or {}
-        subject = props.get("hs_task_subject") or "This task"
-        status = (props.get("hs_task_status") or "NOT_STARTED").upper()
-        priority = (props.get("hs_task_priority") or "").upper()
-
-        summary = f"{subject} — Status: {status}, Priority: {priority or 'Unset'}"
+        status = (props.get("hs_task_status") or "").upper()
 
         if status == "COMPLETED":
-            status_label = "Done"
-            next_action = "Archive or review outcomes."
+            label = "Done"
+            next_action = "Review outcome."
         elif status == "IN_PROGRESS":
-            status_label = "In Progress"
-            next_action = "Check for blockers and ensure timely completion."
-        elif status == "WAITING":
-            status_label = "Waiting"
-            next_action = "Follow up with the responsible party."
+            label = "In Progress"
+            next_action = "Ensure completion."
         else:
-            status_label = "Not Started"
-            next_action = "Prioritize and assign to a team member."
+            label = "Pending"
+            next_action = "Start task."
 
         return AITaskAnalysis(
-            summary=summary, status_label=status_label, next_action=next_action
+            summary=f"{props.get('hs_task_subject', 'Task')} — {status}",
+            status_label=label,
+            next_action=next_action,
         )
+
+    # ======================================================
+    # CONVERSATION
+    # ======================================================
+
+    async def analyze_conversation(
+        self,
+        conv: Mapping[str, Any],
+    ) -> AIConversationAnalysis:
+        messages = conv.get("messages", [])
+        last = messages[-1].get("text", "") if messages else "No messages"
+
+        if len(last) > 50:  # noqa: PLR2004
+            last = last[:47] + "..."
+
+        return AIConversationAnalysis(
+            summary=f"Conversation {conv.get('id')} — Last: {last}",
+            status=conv.get("status", "OPEN"),
+            next_action="Reply if still open.",
+        )
+
+    async def analyze_engagement(
+        self,
+        engagement: Mapping[str, Any],
+    ) -> AIEngagementAnalysis:
+        props = engagement.get("properties") or {}
+        etype = engagement.get("type") or "engagement"
+
+        subject = props.get("hs_subject") or props.get("hs_body_preview") or ""
+
+        if len(subject) > 80:  # noqa: PLR2004
+            subject = subject[:77] + "..."
+
+        return AIEngagementAnalysis(
+            summary=f"{etype.title()} — {subject}",
+            engagement_type=etype,
+            next_action="Log follow-up if required.",
+        )
+
+    # ======================================================
+    # TOP ACTIONS (MULTI-TENANT SAFE)
+    # ======================================================
+
+    async def top_recommended_actions(
+        self,
+        objects: Sequence[Mapping[str, Any]],
+        workspace_id: str | None,
+    ) -> list[str]:
+        cfg = await self._get_workspace_config(workspace_id)
+
+        scored: list[tuple[int, str]] = []
+
+        for obj in objects:
+            props = obj.get("properties") or {}
+            score = self.generate_score(props, cfg)
+            action = self._next_action(props)
+            scored.append((score, action))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        unique = []
+        seen = set()
+
+        for _, action in scored:
+            if action not in seen:
+                unique.append(action)
+                seen.add(action)
+            if len(unique) == 3:  # noqa: PLR2004
+                break
+
+        return unique

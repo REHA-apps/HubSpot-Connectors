@@ -166,12 +166,15 @@ class SupabaseClient:
         payload: Mapping[str, Any],
         *,
         on_conflict: str = "id",
+        ignore_duplicates: bool = False,
     ) -> dict[str, Any] | None:
         self.log.debug("Upserting into %s", table)
 
         serialized_payload = _serialize_payload(dict(payload))
         query = self.client.table(table).upsert(
-            serialized_payload, on_conflict=on_conflict
+            serialized_payload,
+            on_conflict=on_conflict,
+            ignore_duplicates=ignore_duplicates,
         )
         resp = await self._run(query.execute)
 

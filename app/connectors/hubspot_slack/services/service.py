@@ -302,6 +302,27 @@ class InteractionService:
                 associated_type=object_type,
             )
 
+            # Trigger the custom timeline event (App Event)
+            try:
+                sender_name = str(payload.get("user", {}).get("name", "Slack User"))
+                await self.hubspot.publish_app_event(
+                    workspace_id=integration.workspace_id,
+                    event_template_id="slack-message-sent",  # The JSON template name
+                    object_type=object_type,
+                    object_id=object_id,
+                    properties={
+                        "message_body": note_content,
+                        "channel_name": f"<#{channel_id}>" if channel_id else "DM",
+                        "sender_name": sender_name,
+                    },
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to publish custom timeline event (expected if app "
+                    "not yet uploaded to portal): %s",
+                    e,
+                )
+
             # Notify user
             user_id = str(payload.get("user", {}).get("id", ""))
             msg = "✅ Note successfully logged to HubSpot!"

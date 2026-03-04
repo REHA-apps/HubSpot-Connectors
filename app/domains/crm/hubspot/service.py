@@ -662,6 +662,31 @@ class HubSpotService(BaseCRMService):
             associated_type=associated_type,
         )
 
+    async def publish_app_event(
+        self,
+        workspace_id: str,
+        event_template_id: str,
+        object_type: str,
+        object_id: str,
+        properties: dict[str, str],
+    ) -> None:
+        """Logs a custom app event to a record's timeline."""
+        try:
+            client = await self.get_client(workspace_id)
+            await client.create_app_event(
+                event_template_id=event_template_id,
+                object_id=object_id,
+                tokens=properties,
+            )
+            logger.info(
+                "Published app event %s to %s %s",
+                event_template_id,
+                object_type,
+                object_id,
+            )
+        except Exception as e:
+            logger.error("Failed to publish app event: %s", e)
+
     async def send_thread_reply(
         self,
         workspace_id: str,

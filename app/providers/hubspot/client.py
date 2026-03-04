@@ -369,6 +369,23 @@ class HubSpotClient(BaseClient):
 
         return await self.create_object("notes", properties, associations)
 
+    async def create_app_event(
+        self,
+        event_template_id: str,
+        object_id: str,
+        tokens: dict[str, str],
+    ) -> dict[str, Any]:
+        """Posts a custom app event (timeline event) to a specific CRM object."""
+        payload = {
+            "eventTemplateId": event_template_id,
+            "objectId": object_id,
+            "tokens": tokens,
+            "extraData": {"source": "Slack Connector App"},
+        }
+
+        # Use the existing authenticated request wrapper
+        return await self.request("POST", "crm/v3/timeline/events", json=payload)
+
     async def get_object(
         self,
         object_type: str,

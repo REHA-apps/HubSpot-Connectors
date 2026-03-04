@@ -446,6 +446,7 @@ class HubSpotClient(BaseClient):
                 "mobilephone",
                 "lifecyclestage",
                 "company",
+                "hubspot_owner_id",
             ],
         )
 
@@ -453,7 +454,14 @@ class HubSpotClient(BaseClient):
         return await self.get_object(
             "deals",
             object_id,
-            properties=["dealname", "amount", "pipeline", "dealstage", "hs_next_step"],
+            properties=[
+                "dealname",
+                "amount",
+                "pipeline",
+                "dealstage",
+                "hs_next_step",
+                "hubspot_owner_id",
+            ],
         )
 
     async def get_company(self, object_id: str) -> dict[str, Any] | None:
@@ -468,6 +476,7 @@ class HubSpotClient(BaseClient):
                 "num_associated_deals",
                 "hs_analytics_num_page_views",
                 "hs_analytics_num_visits",
+                "hubspot_owner_id",
             ],
         )
 

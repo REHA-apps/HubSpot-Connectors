@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 from app.db.records import PlanTier, Provider
 from app.db.storage_service import StorageService
 from app.domains.ai.service import AIService
 from app.domains.crm.hubspot.service import HubSpotService
 from app.domains.crm.integration_service import IntegrationService
+from app.domains.messaging.base import MessagingService
 
 logger = get_logger("notification.service")
 
@@ -34,8 +35,6 @@ class NotificationService:
         ai: AIService | None = None,
     ):
         self.corr_id = corr_id
-        self.log = CorrelationAdapter(logger, corr_id)
-
         self.storage = storage or StorageService(corr_id=corr_id)
         self.hubspot = HubSpotService(corr_id, storage=self.storage)
         self.integration_service = integration_service or IntegrationService(
@@ -53,33 +52,57 @@ class NotificationService:
         # 1. Resolve Workspace
         integration = await self.storage.get_integration_by_portal_id(portal_id)
         if not integration:
-            self.log.warning("No integration found for portalId=%s", portal_id)
+            logger.warning("No integration found for portalId=%s", portal_id)
             return
 
         workspace_id = integration.workspace_id
 
         # Handle HubSpot uninstallation event
         if sub_type == "app.deleted":
-            self.log.info("Processing HubSpot uninstall for portalId=%s", portal_id)
+            logger.info("Processing HubSpot uninstall for portalId=%s", portal_id)
             await self.integration_service.uninstall_hubspot(workspace_id)
-            self.log.info(
-                "HubSpot integration removed for workspace_id=%s", workspace_id
-            )
+            logger.info("HubSpot integration removed for workspace_id=%s", workspace_id)
             return
+
+        # 1b. Check notifications_enabled flag (set via SettingsPage)
+        slack_integ_check = await self.storage.get_integration(
+            workspace_id, Provider.SLACK
+        )
+        if slack_integ_check:
+            notifs_enabled = slack_integ_check.metadata.get(
+                "notifications_enabled", True
+            )
+            if not notifs_enabled:
+                logger.info(
+                    "Notifications disabled for workspace %s — skipping event %s",
+                    workspace_id,
+                    sub_type,
+                )
+                return
+
+            # Also log clearly if no channel_id is set so the user knows what to do
+            if not slack_integ_check.metadata.get("channel_id"):
+                logger.warning(
+                    "No default Slack channel configured for workspace %s. "
+                    "Open the HubSpot Settings card and enter a channel ID to "
+                    "receive notifications.",
+                    workspace_id,
+                )
+                return
 
         # 2. Determine Object Type
         obj_type = self._map_subscription_to_type(sub_type, event)
         if not obj_type:
-            self.log.info("Skipping unhandled subscription type: %s", sub_type)
+            logger.info("Skipping unhandled subscription type: %s", sub_type)
             return
 
         # 3. Fetch Object from HubSpot
-        self.log.info("Fetching %s %s for analysis", obj_type, object_id)
+        logger.info("Fetching %s %s for analysis", obj_type, object_id)
         obj = await self.hubspot.get_object(
             workspace_id=workspace_id, object_type=obj_type, object_id=object_id
         )
         if not obj:
-            self.log.warning("Could not fetch %s %s", obj_type, object_id)
+            logger.warning("Could not fetch %s %s", obj_type, object_id)
             return
 
         # Inject portalId for deep linking
@@ -94,7 +117,7 @@ class NotificationService:
         # are never silently dropped, regardless of priority.
         is_creation = "creation" in sub_type
         if not is_creation and not self._should_notify(analysis, event):
-            self.log.info(
+            logger.info(
                 "Skipping notification for %s %s (below threshold)", obj_type, object_id
             )
             return
@@ -117,7 +140,7 @@ class NotificationService:
                 for integ in all_integrations:
                     if integ.metadata.get("routing_key") == territory:
                         slack_integ = integ
-                        self.log.info(
+                        logger.info(
                             "Routed notification to Slack team_id=%s for territory=%s",
                             integ.metadata.get("slack_team_id"),
                             territory,
@@ -127,7 +150,7 @@ class NotificationService:
             if not slack_integ and all_integrations:
                 # Default to primary or first available
                 slack_integ = all_integrations[0]
-                self.log.info(
+                logger.info(
                     "No territory match; defaulted to primary Slack team_id=%s",
                     slack_integ.metadata.get("slack_team_id"),
                 )
@@ -138,30 +161,30 @@ class NotificationService:
             )
 
         if not slack_integ:
-            self.log.warning(
+            logger.warning(
                 "No target Slack integration found for workspace %s, cannot notify",
                 workspace_id,
             )
             return
 
-        # Dynamically resolve ChannelService via registry
+        # Dynamically resolve MessagingService via registry
         from app.connectors.registry import registry
 
         manifest = registry.get_connector(
             "slack"
         )  # This logic could be further abstracted to handle multiple providers
         if not manifest or not manifest.channel_service:
-            self.log.error("ChannelService for slack not found in registry")
+            logger.error("MessagingService for slack not found in registry")
             return
 
-        channel_service_cls = manifest.channel_service
-        channel_service = channel_service_cls(
+        messaging_service_cls = manifest.channel_service
+        messaging_service: MessagingService = cast(Any, messaging_service_cls)(
             corr_id=self.corr_id,
             integration_service=self.integration_service,
             slack_integration=slack_integ,
         )
 
-        self.log.info("Sending proactive notification for %s %s", obj_type, object_id)
+        logger.info("Sending proactive notification for %s %s", obj_type, object_id)
         is_pro = await self.integration_service.is_pro_workspace(workspace_id)
 
         thread_ts = None
@@ -169,7 +192,7 @@ class NotificationService:
 
         if is_pro and obj_type == "ticket":
             # 1. Resolve target channel
-            channel = await channel_service._resolve_channel(workspace_id, None)
+            channel = await messaging_service._resolve_channel(workspace_id, None)  # type: ignore
             if channel:
                 # 2. Look up existing thread mapping
                 mapping = await self.storage.get_thread_mapping(
@@ -180,12 +203,10 @@ class NotificationService:
                 )
                 if mapping:
                     thread_ts = mapping.thread_ts
-                    self.log.info(
-                        "Found existing thread mapping thread_ts=%s", thread_ts
-                    )
+                    logger.info("Found existing thread mapping thread_ts=%s", thread_ts)
 
         # 6. Send Slack Notification
-        sent_ts = await channel_service.send_card(
+        sent_ts = await messaging_service.send_card(
             workspace_id=workspace_id,
             obj=obj,
             analysis=analysis,
@@ -195,7 +216,7 @@ class NotificationService:
 
         # 7. Persist new thread mapping if this was the first message
         if is_pro and obj_type == "ticket" and sent_ts and not thread_ts:
-            channel = await channel_service._resolve_channel(workspace_id, None)
+            channel = await messaging_service._resolve_channel(workspace_id, None)  # type: ignore
             if channel:
                 await self.storage.upsert_thread_mapping(
                     {
@@ -206,7 +227,7 @@ class NotificationService:
                         "thread_ts": sent_ts,
                     }
                 )
-                self.log.info("Stored new thread mapping thread_ts=%s", sent_ts)
+                logger.info("Stored new thread mapping thread_ts=%s", sent_ts)
 
     def _map_subscription_to_type(
         self, sub_type: str, event: dict[str, Any] | None = None
@@ -219,6 +240,7 @@ class NotificationService:
             "company": "company",
             "ticket": "ticket",
             "task": "task",
+            "meeting": "meeting",
             "conversation": "conversation",
             "lead": "lead",
         }
@@ -231,16 +253,17 @@ class NotificationService:
         if sub_type.startswith("object.") and event:
             object_type_id_map = {
                 "0-1": "contact",
-                "0-2": "deal",
-                "0-3": "company",
-                "0-5": "ticket",
+                "0-2": "company",  # HubSpot: 0-2 = companies
+                "0-3": "deal",  # HubSpot: 0-3 = deals
                 "0-4": "task",
-                "0-136": "lead",  # HubSpot Leads object
+                "0-5": "ticket",
+                "0-47": "meeting",
+                "0-136": "lead",
             }
             object_type_id = str(event.get("objectTypeId", ""))
             obj_type = object_type_id_map.get(object_type_id)
             if obj_type:
-                self.log.info(
+                logger.info(
                     "Mapped object.* event objectTypeId=%s → %s",
                     object_type_id,
                     obj_type,
@@ -257,16 +280,23 @@ class NotificationService:
         Uses event fields or AI analysis to decide.
         """
         # 1. Ticket priority changed to HIGH or URGENT — always notify.
-        #    Check the raw event directly so we don't rely on AI to catch it.
         if event.get("propertyName") == "hs_ticket_priority" and str(
             event.get("propertyValue", "")
         ).upper() in ("HIGH", "URGENT"):
             return True
 
-        # 2. Deal stage changed to closed-won or closed-lost — always notify.
+        # 2. Ticket pipeline stage changed — always notify.
+        if event.get("propertyName") == "hs_pipeline_stage":
+            return True
+
+        # 3. Deal stage changed to closed-won or closed-lost — always notify.
         if event.get("propertyName") == "dealstage" and str(
             event.get("propertyValue", "")
         ).lower() in ("closedwon", "closedlost"):
+            return True
+
+        # 4. Task status changed — always notify.
+        if event.get("propertyName") == "hs_task_status":
             return True
 
         # 3. AI-driven: Deals with High/Critical risk

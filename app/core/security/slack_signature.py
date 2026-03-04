@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from fastapi import HTTPException
 
 from app.core.config import settings
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 from app.utils.constants import ErrorCode
 
 logger = get_logger("slack.security")
@@ -31,21 +31,19 @@ async def verify_slack_signature(
 
     Timestamp must be within 5 minutes to prevent replay attacks.
     """
-    log = CorrelationAdapter(logger, corr_id or "no-corr-id")
-
     timestamp = headers.get("X-Slack-Request-Timestamp")
     signature = headers.get("X-Slack-Signature")
     secret = settings.SLACK_SIGNING_SECRET.get_secret_value()
 
     if not timestamp or not signature:
-        log.error("Missing Slack signature headers")
+        logger.error("Missing Slack signature headers")
         raise HTTPException(
             status_code=ErrorCode.UNAUTHORIZED,
             detail="Missing Slack signature headers",
         )
 
     if not secret:
-        log.error("Missing Slack signing secret")
+        logger.error("Missing Slack signing secret")
         raise HTTPException(
             status_code=ErrorCode.INTERNAL_ERROR,
             detail="Server misconfiguration",
@@ -57,14 +55,14 @@ async def verify_slack_signature(
     try:
         ts = int(timestamp)
     except ValueError:
-        log.error("Invalid Slack timestamp")
+        logger.error("Invalid Slack timestamp")
         raise HTTPException(
             status_code=ErrorCode.UNAUTHORIZED,
             detail="Invalid Slack timestamp",
         )
 
     if abs(time.time() - ts) > 60 * 5:
-        log.error("Slack request timestamp too old")
+        logger.error("Slack request timestamp too old")
         raise HTTPException(
             status_code=ErrorCode.UNAUTHORIZED,
             detail="Slack request timestamp too old",
@@ -85,10 +83,10 @@ async def verify_slack_signature(
     )
 
     if not hmac.compare_digest(computed, signature):
-        log.error("Slack signature mismatch")
+        logger.error("Slack signature mismatch")
         raise HTTPException(
             status_code=ErrorCode.UNAUTHORIZED,
             detail="Invalid Slack signature",
         )
 
-    log.info("Slack signature verified")
+    logger.info("Slack signature verified")

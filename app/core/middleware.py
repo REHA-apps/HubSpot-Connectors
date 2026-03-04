@@ -1,22 +1,39 @@
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.requests import Request
-from starlette.responses import Response
+"""Pure ASGI middleware for correlation-ID propagation.
 
-from app.core.logging import get_corr_id, log_context
+Replaces BaseHTTPMiddleware to avoid the performance penalty of wrapping
+every request body in a ``StreamingResponse``.
+"""
+
+from __future__ import annotations
+
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from app.core.logging import get_corr_id_from_scope, log_context
 
 
-class LogContextMiddleware(BaseHTTPMiddleware):
-    """Description:
-    Middleware that extracts or generates a correlation ID and binds it
-    to the logging context for the duration of the request.
+class LogContextMiddleware:
+    """Bind a correlation ID to the logging context for each request.
+
+    This is a pure ASGI middleware (no ``BaseHTTPMiddleware`` overhead).
+
     """
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        corr_id = await get_corr_id(request)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        corr_id = get_corr_id_from_scope(scope)
+
+        async def send_with_corr_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((b"x-correlation-id", corr_id.encode()))
+                message["headers"] = headers
+            await send(message)
 
         with log_context(corr_id):
-            response = await call_next(request)
-            response.headers["X-Correlation-ID"] = corr_id
-            return response
+            await self.app(scope, receive, send_with_corr_id)

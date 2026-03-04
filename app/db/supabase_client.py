@@ -55,6 +55,15 @@ class SupabaseClient:
         self.log = CorrelationAdapter(logger, corr_id or "supabase")
 
     async def _run(self, fn: Callable[[], T]) -> T:
+        """Executes a synchronous Supabase operation in a separate thread.
+
+        Args:
+            fn: The blocking function to execute.
+
+        Returns:
+            The result of the operation.
+
+        """
         return await to_thread.run_sync(fn)
 
     async def fetch_single(
@@ -64,19 +73,18 @@ class SupabaseClient:
         *,
         select: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
-        """Description:
-            Fetches a single record from the database matching the provided criteria.
+        """Fetches a single record matching the filters.
 
         Args:
-            table (str): Target table name.
-            filters (Mapping[str, Any]): Equivalence filters (column: value).
-            select (Sequence[str] | None): Column selection override.
+            table: Target table name.
+            filters: Equivalence filters (column: value).
+            select: Column selection override.
 
         Returns:
-            dict[str, Any] | None: The record payload or None if not found.
+            The record payload or None if not found.
 
         """
-        self.log.debug("Fetching single row from %s filters=%s", table, filters)
+        logger.debug("Fetching single row from %s filters=%s", table, filters)
 
         query = self.client.table(table).select(",".join(select) if select else "*")
 
@@ -88,28 +96,28 @@ class SupabaseClient:
         except Exception as e:
             # Handle "0 rows" error from .single()
             if hasattr(e, "code") and getattr(e, "code") == "PGRST116":
-                self.log.info("No row found in %s for filters=%s", table, filters)
+                logger.info("No row found in %s for filters=%s", table, filters)
                 return None
 
             # For some versions, the error might be in the args or as a string
             err_msg = str(e)
             if "PGRST116" in err_msg or "0 rows" in err_msg:
-                self.log.info(
+                logger.info(
                     "No row found in %s for filters=%s (caught via msg)", table, filters
                 )
                 return None
 
-            self.log.error("SUPABASE ERROR: %s", e)
+            logger.error("SUPABASE ERROR: %s", e)
             if e.args:
-                self.log.error("SUPABASE RAW ERROR PAYLOAD: %s", e.args[0])
+                logger.error("SUPABASE RAW ERROR PAYLOAD: %s", e.args[0])
             raise
 
         raw = resp.data
-        self.log.debug(
+        logger.debug(
             "Supabase fetch_single from %s: row_found=%s", table, raw is not None
         )
         if not isinstance(raw, dict):
-            self.log.info("No row found for %s filters=%s", table, filters)
+            logger.info("No row found for %s filters=%s", table, filters)
             return None
 
         return raw
@@ -123,7 +131,20 @@ class SupabaseClient:
         order_by: tuple[str, str] | None = None,
         limit: int | None = None,
     ) -> Sequence[dict[str, Any]]:
-        self.log.debug("Fetching many rows from %s filters=%s", table, filters)
+        """Fetches multiple records from the database.
+
+        Args:
+            table: Target table name.
+            filters: Equivalence filters (column: value).
+            select: Column selection override.
+            order_by: Tuple of (column, direction).
+            limit: Maximum number of rows.
+
+        Returns:
+            A sequence of record payloads.
+
+        """
+        logger.debug("Fetching many rows from %s filters=%s", table, filters)
 
         query = self.client.table(table).select(",".join(select) if select else "*")
 
@@ -145,7 +166,17 @@ class SupabaseClient:
         table: str,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        self.log.debug("Inserting into %s", table)
+        """Inserts a new record into the database.
+
+        Args:
+            table: Target table name.
+            payload: Row data to insert.
+
+        Returns:
+            The inserted record payload.
+
+        """
+        logger.debug("Inserting into %s", table)
 
         serialized_payload = _serialize_payload(dict(payload))
         query = self.client.table(table).insert(serialized_payload)
@@ -168,7 +199,19 @@ class SupabaseClient:
         on_conflict: str = "id",
         ignore_duplicates: bool = False,
     ) -> dict[str, Any] | None:
-        self.log.debug("Upserting into %s", table)
+        """Upserts a record into the database.
+
+        Args:
+            table: Target table name.
+            payload: Row data to upsert.
+            on_conflict: Conflict resolution column.
+            ignore_duplicates: Whether to ignore duplicate keys.
+
+        Returns:
+            The upserted record payload or None on failure.
+
+        """
+        logger.debug("Upserting into %s", table)
 
         serialized_payload = _serialize_payload(dict(payload))
         query = self.client.table(table).upsert(
@@ -192,7 +235,18 @@ class SupabaseClient:
         filters: Mapping[str, Any],
         payload: Mapping[str, Any],
     ) -> dict[str, Any] | None:
-        self.log.debug("Updating %s filters=%s", table, filters)
+        """Updates records matching the filters.
+
+        Args:
+            table: Target table name.
+            filters: Equivalence filters identifying the row(s).
+            payload: New values to set.
+
+        Returns:
+            The updated record payload or None if not found.
+
+        """
+        logger.debug("Updating %s filters=%s", table, filters)
 
         serialized_payload = _serialize_payload(dict(payload))
         update_query = self.client.table(table).update(serialized_payload)
@@ -209,7 +263,17 @@ class SupabaseClient:
         table: str,
         filters: Mapping[str, Any],
     ) -> int:
-        self.log.info("Deleting from %s filters=%s", table, filters)
+        """Deletes records matching the filters.
+
+        Args:
+            table: Target table name.
+            filters: Equivalence filters identifying the row(s).
+
+        Returns:
+            The number of deleted records.
+
+        """
+        logger.info("Deleting from %s filters=%s", table, filters)
 
         query = self.client.table(table).delete()
         for key, value in filters.items():
@@ -223,8 +287,17 @@ class SupabaseClient:
         table: str,
         filters: Mapping[str, Any],
     ) -> int:
-        """Return count of rows matching filters (Supabase version compatible)."""
-        self.log.info("Counting rows in %s filters=%s", table, filters)
+        """Return count of rows matching filters.
+
+        Args:
+            table: Target table name.
+            filters: Equivalence filters identifying the rows.
+
+        Returns:
+            The count of matching records.
+
+        """
+        logger.info("Counting rows in %s filters=%s", table, filters)
 
         query = self.client.table(table).select("id")
 

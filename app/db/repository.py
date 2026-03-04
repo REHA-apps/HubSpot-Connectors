@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Generic, TypeVar
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 from app.db.protocols import SupabaseModel, SupabaseRow
 from app.db.supabase_client import SupabaseClient
 
@@ -13,12 +13,13 @@ logger = get_logger("supabase.repo")
 
 
 class SupabaseRepository(Generic[R]):
-    """Description:
-        Generic asynchronous repository for typed CRUD operations on Supabase tables.
+    """Generic asynchronous repository for typed CRUD operations on Supabase tables.
 
-    Rules Applied:
-        - Enforces strong typing via Pydantic model integration.
-        - Provides standard hooks for fetching single or multiple records with filters.
+    Attributes:
+        client: The underlying database client.
+        table: The name of the table this repository manages.
+        model: The Pydantic model for record validation and conversion.
+
     """
 
     def __init__(
@@ -31,7 +32,6 @@ class SupabaseRepository(Generic[R]):
         self.client = client
         self.table = table
         self.model = model
-        self.log = CorrelationAdapter(logger, corr_id)
 
     # Fetching operations
     async def fetch_single(
@@ -40,7 +40,17 @@ class SupabaseRepository(Generic[R]):
         *,
         select: Sequence[str] | None = None,
     ) -> R | None:
-        self.log.debug("fetch_single(%s, filters=%s)", self.table, filters)
+        """Fetches a single record and converts it to the model.
+
+        Args:
+            filters: Equivalence filters.
+            select: Column selection override.
+
+        Returns:
+            The model instance or None if not found.
+
+        """
+        logger.debug("fetch_single(%s, filters=%s)", self.table, filters)
 
         row = await self.client.fetch_single(self.table, filters, select=select)
         if row is None:
@@ -53,10 +63,22 @@ class SupabaseRepository(Generic[R]):
         filters: Mapping[str, Any],
         *,
         select: Sequence[str] | None = None,
-        order_by: tuple[str, str] | None = None,  # ("created_at", "desc")
+        order_by: tuple[str, str] | None = None,
         limit: int | None = None,
     ) -> list[R]:
-        self.log.debug("fetch_many(%s, filters=%s)", self.table, filters)
+        """Fetches multiple records and converts them to models.
+
+        Args:
+            filters: Equivalence filters.
+            select: Column selection override.
+            order_by: Tuple of (column, direction).
+            limit: Maximum number of rows.
+
+        Returns:
+            A list of model instances.
+
+        """
+        logger.debug("fetch_many(%s, filters=%s)", self.table, filters)
 
         rows: Sequence[SupabaseRow] = await self.client.fetch_many(
             self.table,
@@ -69,13 +91,34 @@ class SupabaseRepository(Generic[R]):
 
     # Mutation operations
     async def insert(self, payload: Mapping[str, Any]) -> R:
-        self.log.debug("insert(%s): %s", self.table, payload)
+        """Inserts a record and returns the validated model.
+
+        Args:
+            payload: Row data.
+
+        Returns:
+            The created model instance.
+
+        """
+        logger.debug("insert(%s): %s", self.table, payload)
 
         row = await self.client.insert(self.table, payload)
         return self.model.from_supabase(row)
 
     async def upsert(self, payload: Mapping[str, Any]) -> R:
-        self.log.debug("upsert(%s): %s", self.table, payload)
+        """Upserts a record and returns the validated model.
+
+        Args:
+            payload: Row data.
+
+        Returns:
+            The upserted model instance.
+
+        Raises:
+            RuntimeError: If upsert returns no data.
+
+        """
+        logger.debug("upsert(%s): %s", self.table, payload)
 
         row = await self.client.upsert(self.table, payload)
         if row is None:
@@ -90,7 +133,17 @@ class SupabaseRepository(Generic[R]):
         filters: Mapping[str, Any],
         payload: Mapping[str, Any],
     ) -> R | None:
-        self.log.debug(
+        """Updates records and returns the first updated model.
+
+        Args:
+            filters: Filters identifying the row.
+            payload: New values.
+
+        Returns:
+            The updated model or None if not found.
+
+        """
+        logger.debug(
             "update(%s, filters=%s, payload=%s)",
             self.table,
             filters,
@@ -105,7 +158,7 @@ class SupabaseRepository(Generic[R]):
 
     # Deletion operations
     async def delete(self, filters: Mapping[str, Any]) -> int:
-        self.log.debug("delete(%s, filters=%s)", self.table, filters)
+        logger.debug("delete(%s, filters=%s)", self.table, filters)
         return await self.client.delete(self.table, filters)
 
     # Utility operations

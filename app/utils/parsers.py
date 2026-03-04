@@ -4,7 +4,7 @@ import shlex
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 from app.db.protocols import SupabaseRow
 
 logger = get_logger("utils.parsers")
@@ -16,34 +16,28 @@ def parse_slack_command_text(
     *,
     corr_id: str | None = None,
 ) -> dict[str, str]:
-    """Description:
-        Parses raw Slack slash command text into key-value pairs using shell-style
-        splitting.
+    """Parses raw Slack slash command text into key-value pairs.
+
+    Uses shell-style splitting to handle quoted values.
 
     Args:
-        text (str): The raw command text (e.g., 'email=foo@bar.com').
-        corr_id (str | None): Optional correlation ID for logging.
+        text: The raw command text (e.g., 'email=foo@bar.com').
+        corr_id: Optional correlation ID for logging.
 
     Returns:
-        dict[str, str]: Dictionary of parsed key-value pairs.
-
-    Rules Applied:
-        - Supports quoted strings for values containing spaces.
-        - Only inclusions with '=' are parsed as pairs.
+        A dictionary of parsed key-value pairs.
 
     """
-    log = CorrelationAdapter(logger, corr_id or "no-corr-id")
-
     try:
         parts = shlex.split(text)
         parsed = {
             key: value for key, value in (p.split("=", 1) for p in parts if "=" in p)
         }
-        log.debug("Parsed Slack command text: %s", parsed)
+        logger.debug("Parsed Slack command text: %s", parsed)
         return parsed
 
     except Exception as exc:
-        log.error("Failed to parse Slack command text: %s", exc)
+        logger.error("Failed to parse Slack command text: %s", exc)
         return {}
 
 
@@ -53,30 +47,37 @@ def coerce_to_str_dict(
     *,
     corr_id: str | None = None,
 ) -> dict[str, str | None]:
-    """Description:
-        Normalizes a dictionary by converting all values to strings or None.
+    """Normalizes a dictionary by converting all values to strings or None.
 
     Args:
-        data (Mapping[str, Any]): The source dictionary.
-        corr_id (str | None): Optional correlation ID for logging.
+        data: The source dictionary.
+        corr_id: Optional correlation ID for logging.
 
     Returns:
-        dict[str, str | None]: A new dictionary with string-coerced values.
+        A new dictionary with string-coerced values.
 
     """
-    log = CorrelationAdapter(logger, corr_id or "no-corr-id")
-
     result = {
         key: (str(value) if value is not None else None) for key, value in data.items()
     }
 
-    log.debug("Coerced mapping to str dict: %s", result)
+    logger.debug("Coerced mapping to str dict: %s", result)
 
     return result
 
 
-def to_int(value: Any) -> int | None:
-    """Convert value to int, returning None on failure."""
+def to_int(value: str | int | None) -> int | None:
+    """Convert value to int, returning None on failure.
+
+    Args:
+        value: The string, integer, or None value to convert.
+
+    Returns:
+        The integer value or None.
+
+    """
+    if value is None:
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -90,44 +91,35 @@ def validate_supabase_row(
     *,
     corr_id: str | None = None,
 ) -> None:
-    """Description:
-        Ensures that a Supabase database row contains all required fields.
+    """Ensures that a Supabase database row contains all required fields.
 
     Args:
-        data (SupabaseRow): The record retrieved from Supabase.
-        required (Iterable[str]): List of mandatory column names.
-        corr_id (str | None): Optional correlation ID for logging.
+        data: The record retrieved from Supabase.
+        required: List of mandatory column names.
+        corr_id: Optional correlation ID for logging.
 
-    Returns:
-        None
-
-    Rules Applied:
-        - Raises ValueError if any required field is missing.
+    Raises:
+        ValueError: If any required field is missing.
 
     """
-    log = CorrelationAdapter(logger, corr_id or "no-corr-id")
-
     missing = [key for key in required if key not in data]
     if missing:
-        log.error("Supabase row missing required fields: %s", missing)
+        logger.error("Supabase row missing required fields: %s", missing)
         raise ValueError(f"Missing required fields: {missing}")
 
-    log.debug("Supabase row validated successfully")
+    logger.debug("Supabase row validated successfully")
 
 
 def parse_hs_task_command(text: str) -> dict[str, Any]:
-    """Description:
-        Parses advanced parameters from /hs-task command text.
-        Supports:
-        - Mentions: <@U12345> -> extract user_id
-        - Due dates: today, tomorrow, next week
-        - Task name: remaining text
+    """Parses advanced parameters from /hs-task command text.
+
+    Supports mentions (@user), relative due dates (today, tomorrow), and subjects.
 
     Args:
-        text (str): The raw command text.
+        text: The raw command text.
 
     Returns:
-        dict[str, Any]: Parsed components (subject, mention, due_date).
+        A dictionary containing subject, slack_user_id, and due_date.
 
     """
     import re

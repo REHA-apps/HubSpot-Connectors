@@ -84,3 +84,8 @@ nginx/logs/
 # -------------------------
 .DS_Store
 Thumbs.db
+
+# -------------------------
+# Local Assets (logos, images not served by app)
+# -------------------------
+assets/

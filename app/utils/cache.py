@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import time
 from collections.abc import Callable, Coroutine
@@ -7,13 +9,12 @@ T = TypeVar("T")
 
 
 class AsyncTTL(Generic[T]):  # noqa: UP046
-    """Description:
-        A simple asynchronous in-memory LRU-like cache with Time-To-Live (TTL).
+    """A simple asynchronous in-memory LRU-like cache with Time-To-Live (TTL).
 
-    Rules Applied:
-        - Thread-safe (via asyncio.Lock).
-        - Supports optimistic fetching (get_or_fetch) with per-key coalescing.
-        - Allows manual invalidation.
+    Attributes:
+        ttl: Time-to-live in seconds.
+        max_size: Maximum number of entries.
+
     """
 
     def __init__(self, ttl: int = 300, max_size: int = 1024):

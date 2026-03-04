@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import uuid
+from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
@@ -121,4 +122,18 @@ async def get_corr_id(request: Request) -> str:
         return corr_id
 
     # 3. Generate new (should rarely happen — middleware runs first)
+    return str(uuid.uuid4())
+
+
+def get_corr_id_from_scope(scope: Mapping[str, Any]) -> str:
+    """Extract the correlation ID from a raw ASGI scope.
+
+    Used by the pure-ASGI ``LogContextMiddleware`` which does not
+    have a Starlette ``Request`` object.
+
+    """
+    headers = dict(scope.get("headers", []))
+    corr_id = headers.get(b"x-correlation-id")
+    if corr_id:
+        return corr_id.decode()
     return str(uuid.uuid4())

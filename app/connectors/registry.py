@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Protocol
 from fastapi import APIRouter
 
 from app.core.models.ui import UnifiedCard
+from app.domains.messaging.base import MessagingService
 
 
 class Renderer(Protocol):
@@ -17,7 +18,7 @@ class ConnectorManifest:
     name: str
     renderer: type[Renderer] | None = None
     service: type[Any] | None = None
-    channel_service: type[Any] | None = None
+    channel_service: type[MessagingService] | None = None
     routers: list[APIRouter] = field(default_factory=list)
 
 
@@ -37,7 +38,7 @@ class ConnectorRegistry:
         service: type[Any] | None = None,
         channel_service: type[Any] | None = None,
         routers: list[APIRouter] | None = None,
-    ):
+    ) -> None:
         cls._connectors[name] = ConnectorManifest(
             name=name,
             renderer=renderer,

@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 from app.db.records import Provider
+from app.db.storage_service import StorageService
 from app.domains.crm.base import BaseCRMService
 from app.domains.crm.hubspot.service import HubSpotService
 
@@ -16,12 +17,15 @@ class CRMService(BaseCRMService):
     Routes generic CRM requests to the appropriate provider-specific service.
     """
 
-    def __init__(self, corr_id: str) -> None:
+    def __init__(
+        self,
+        corr_id: str,
+        *,
+        storage: StorageService | None = None,
+    ) -> None:
         self.corr_id = corr_id
-        self.log = CorrelationAdapter(logger, corr_id)
-
         # Initialize provider-specific services
-        self.hubspot = HubSpotService(corr_id=corr_id)
+        self.hubspot = HubSpotService(corr_id=corr_id, storage=storage)
         # self.salesforce = SalesforceService(corr_id=corr_id)
         # Placeholder for future expansion
 

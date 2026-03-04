@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 
 logger = get_logger("middleware")
 
@@ -26,9 +26,6 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             request.headers.get("X-Correlation-Id") or f"evt_{uuid.uuid4().hex[:12]}"
         )
         request.state.corr_id = corr_id
-
-        log = CorrelationAdapter(logger, corr_id)
-
         # ---------------------------------------------------------
         # 2. Optional: skip logging for health checks
         # ---------------------------------------------------------
@@ -39,7 +36,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         # 3. Log incoming request
         # ---------------------------------------------------------
         content_length = request.headers.get("content-length", "unknown")
-        log.info(
+        logger.info(
             "Incoming request %s %s (body=%s bytes)",
             request.method,
             request.url.path,
@@ -54,7 +51,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             # ---------------------------------------------------------
             # 4. Log unhandled exceptions with correlation ID
             # ---------------------------------------------------------
-            log.error("Unhandled exception during request: %s", exc)
+            logger.error("Unhandled exception during request: %s", exc)
             raise
 
         duration_ms = int((time.perf_counter() - start) * 1000)
@@ -62,7 +59,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         # ---------------------------------------------------------
         # 5. Log response details
         # ---------------------------------------------------------
-        log.info(
+        logger.info(
             "Completed request %s %s -> %s (%d ms)",
             request.method,
             request.url.path,

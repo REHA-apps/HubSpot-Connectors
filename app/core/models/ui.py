@@ -12,6 +12,7 @@ class CardAction(BaseModel):
     url: str | None = None
     options: list[tuple[str, str]] | None = None  # [(label, value), ...]
     selected_option: str | None = None  # value of the currently selected option
+    is_gated: bool = False
 
 
 class UnifiedCard(BaseModel):

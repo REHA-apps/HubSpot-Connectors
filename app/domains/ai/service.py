@@ -115,6 +115,28 @@ class AIThreadSummary:
     sentiment: str
 
 
+@dataclass(frozen=True)
+class AILeadAnalysis:
+    summary: str
+    status_label: str
+    next_action: str
+    score: int
+
+
+@dataclass(frozen=True)
+class AICommunicationAnalysis:
+    summary: str
+    channel: str
+    next_action: str
+
+
+@dataclass(frozen=True)
+class AIAppointmentAnalysis:
+    summary: str
+    status_label: str
+    next_action: str
+
+
 # ==========================================================
 # SERVICE (STATELESS + MULTI-TENANT SAFE)
 # ==========================================================
@@ -328,7 +350,7 @@ class AIService:
         if not engagements:
             return ""
 
-        lines = ["\n*Recent Engagements:*"]
+        lines = ["\n**Recent Engagements:**"]
 
         sorted_engs = []
         for e in engagements:
@@ -346,26 +368,35 @@ class AIService:
 
             if etype == "meetings":
                 title = props.get("hs_meeting_title", "Meeting")
-                lines.append(f"• 📅 *Meeting*: Scheduled for {dt_str} about '{title}'")
+                lines.append(
+                    f"• 📅 **Meeting**: Scheduled for {dt_str} about '{title}'"
+                )
             elif etype == "emails":
                 subject = props.get("hs_email_subject", "Email")
                 lines.append(
-                    f"• ✉️ *Email*: Logged on {dt_str} with subject '{subject}'"
+                    f"• ✉️ **Email**: Logged on {dt_str} with subject '{subject}'"
                 )
             elif etype == "calls":
                 title = props.get("hs_call_title", "Call")
-                lines.append(f"• 📞 *Call*: Took place on {dt_str} regarding '{title}'")
+                lines.append(
+                    f"• 📞**Call**: Took place on {dt_str} regarding '{title}'"
+                )
             elif etype == "tasks":
                 subject = props.get("hs_task_subject", "Task")
-                lines.append(f"• ✅ *Task*: Created on {dt_str} to '{subject}'")
+                lines.append(f"• ✅ **Task**: Created on {dt_str} to '{subject}'")
             else:
-                lines.append(f"• 📝 *Activity*: Logged on {dt_str}")
+                lines.append(f"• 📝 **Activity**: Logged on {dt_str}")
 
         return "\n".join(lines)
 
     def _format_associated_objects(
         self, associated_objects: dict[str, list[dict[str, Any]]] | None
     ) -> str:
+        """Format associated CRM objects as text for Slack messages.
+
+        Note: The HubSpot UI extension card displays associations natively via
+        CrmAssociationTable components and does not use this output.
+        """
         if not associated_objects:
             return ""
 
@@ -373,7 +404,7 @@ class AIService:
 
         contacts = associated_objects.get("contacts")
         if contacts:
-            lines.append("\n*Associated Contacts:*")
+            lines.append("\n**Associated Contacts:**")
             for c in contacts[:5]:
                 props = c.get("properties") or {}
                 fname = props.get("firstname", "")
@@ -384,7 +415,7 @@ class AIService:
 
         companies = associated_objects.get("companies")
         if companies:
-            lines.append("\n*Associated Companies:*")
+            lines.append("\n**Associated Companies:**")
             for c in companies[:5]:
                 props = c.get("properties") or {}
                 name = props.get("name", "Unknown Company")
@@ -393,7 +424,7 @@ class AIService:
 
         deals = associated_objects.get("deals")
         if deals:
-            lines.append("\n*Associated Deals:*")
+            lines.append("\n**Associated Deals:**")
             for d in deals[:5]:
                 props = d.get("properties") or {}
                 name = props.get("dealname", "Unknown Deal")
@@ -402,7 +433,7 @@ class AIService:
 
         tickets = associated_objects.get("tickets")
         if tickets:
-            lines.append("\n*Associated Tickets:*")
+            lines.append("\n**Associated Tickets:**")
             for t in tickets[:5]:
                 props = t.get("properties") or {}
                 subject = props.get("subject", "Unknown Ticket")
@@ -422,6 +453,7 @@ class AIService:
         *,
         engagements: Sequence[Mapping[str, Any]] | None = None,
         associated_objects: dict[str, list[dict[str, Any]]] | None = None,
+        include_associations: bool = True,
     ) -> (
         AIContactAnalysis
         | AICompanyAnalysis
@@ -430,22 +462,30 @@ class AIService:
         | AITaskAnalysis
         | AIConversationAnalysis
         | AIEngagementAnalysis
+        | AILeadAnalysis
+        | AICommunicationAnalysis
+        | AIAppointmentAnalysis
         | None
     ):
         normalized = object_type.lower()
 
         # HubSpot numeric object types support
-        if normalized in {"contact", "0-1", "lead"}:
+        if normalized in {"contact", "0-1"}:
             return await self.analyze_contact(
                 obj,
                 engagements=engagements,
                 associated_objects=associated_objects,
+                include_associations=include_associations,
             )
+
+        if normalized in {"lead", "0-136"}:
+            return await self.analyze_lead(obj)
 
         if normalized in {"company", "0-2"}:
             return await self.analyze_company(
                 obj,
                 associated_objects=associated_objects,
+                include_associations=include_associations,
             )
 
         if normalized in {"deal", "0-3"}:
@@ -453,18 +493,37 @@ class AIService:
                 obj,
                 associated_objects=associated_objects,
                 engagements=engagements,
+                include_associations=include_associations,
             )
 
         if normalized in {"ticket", "0-5"}:
-            return await self.analyze_ticket(obj)
+            return await self.analyze_ticket(
+                obj,
+                include_associations=include_associations,
+            )
 
-        if normalized in {"task"}:
+        if normalized in {"task", "0-4"}:
             return await self.analyze_task(obj)
+
+        if normalized in {"communication", "0-18"}:
+            return await self.analyze_communication(obj)
+
+        if normalized in {"appointment", "0-421"}:
+            return await self.analyze_appointment(obj)
 
         if normalized in {"conversation"}:
             return await self.analyze_conversation(obj)
 
-        if normalized in {"call", "meeting", "email", "note"}:
+        if normalized in {
+            "call",
+            "meeting",
+            "email",
+            "note",
+            "0-48",
+            "0-47",
+            "0-49",
+            "0-46",
+        }:
             return await self.analyze_engagement(obj)
 
         raise ValueError(f"Unsupported object type: {object_type}")
@@ -478,6 +537,7 @@ class AIService:
         obj: Mapping[str, Any],
         engagements: Sequence[Mapping[str, Any]] | None = None,
         associated_objects: dict[str, list[dict[str, Any]]] | None = None,
+        include_associations: bool = True,
     ) -> AIContactAnalysis:
         props = obj.get("properties") or {}
         workspace_id = obj.get("workspace_id")
@@ -506,8 +566,11 @@ class AIService:
         next_action = self._next_action(props)
 
         engagements_text = self._format_engagements(engagements)
-        contacts_text = self._format_associated_objects(associated_objects)
-        insight = summary + engagements_text + contacts_text
+        assoc_text = ""
+        if include_associations:
+            assoc_text = self._format_associated_objects(associated_objects)
+
+        insight = summary + engagements_text + assoc_text
 
         return AIContactAnalysis(
             insight=insight,
@@ -572,14 +635,13 @@ class AIService:
         self,
         company: Mapping[str, Any],
         associated_objects: dict[str, list[dict[str, Any]]] | None = None,
+        include_associations: bool = True,
     ) -> AICompanyAnalysis:
         props = company.get("properties") or {}
         visits = to_int(props.get("hs_analytics_num_visits")) or 0
         health = "Healthy" if visits > 10 else "Needs Attention"  # noqa: PLR2004
 
         top = None
-        # Dynamically pull recommended actions if there are
-        # contacts inside the associated objects.
         if associated_objects and "contacts" in associated_objects:
             top = await self.top_recommended_actions(
                 associated_objects["contacts"],
@@ -587,8 +649,8 @@ class AIService:
             )
 
         summary = f"{props.get('name', 'Company')} with {visits} visits"
-        contacts_text = self._format_associated_objects(associated_objects)
-        summary += contacts_text
+        if include_associations:
+            summary += self._format_associated_objects(associated_objects)
 
         return AICompanyAnalysis(
             summary=summary,
@@ -606,6 +668,7 @@ class AIService:
         deal: Mapping[str, Any],
         associated_objects: dict[str, list[dict[str, Any]]] | None = None,
         engagements: Sequence[Mapping[str, Any]] | None = None,
+        include_associations: bool = True,
     ) -> AIDealAnalysis:
         props = deal.get("properties") or {}
         workspace_id = deal.get("workspace_id")
@@ -615,7 +678,6 @@ class AIService:
 
         metrics = self._engagement_metrics(engagements)
 
-        # Reduce risk if recent engagement exists
         if metrics["recent"]:
             score += cfg.deal_recent_activity_risk_reduction
 
@@ -637,11 +699,9 @@ class AIService:
 
         summary = f"{props.get('dealname', 'Deal')} in stage '{stage}'"
 
-        objs_text = self._format_associated_objects(associated_objects)
-        engagements_text = self._format_engagements(engagements)
-
-        summary += objs_text
-        summary += engagements_text
+        if include_associations:
+            summary += self._format_associated_objects(associated_objects)
+        summary += self._format_engagements(engagements)
 
         return AIDealAnalysis(
             summary=summary,
@@ -660,6 +720,7 @@ class AIService:
         self,
         ticket: Mapping[str, Any],
         associated_objects: dict[str, list[dict[str, Any]]] | None = None,
+        include_associations: bool = True,
     ) -> AITicketAnalysis:
         props = ticket.get("properties") or {}
         priority = (props.get("hs_ticket_priority") or "").upper()
@@ -675,8 +736,8 @@ class AIService:
             next_action = "Review in next cycle."
 
         summary = f"{props.get('subject', 'Ticket')} — Priority: {priority}"
-        objs_text = self._format_associated_objects(associated_objects)
-        summary += objs_text
+        if include_associations:
+            summary += self._format_associated_objects(associated_objects)
 
         return AITicketAnalysis(
             summary=summary,
@@ -707,6 +768,105 @@ class AIService:
 
         return AITaskAnalysis(
             summary=f"{props.get('hs_task_subject', 'Task')} — {status}",
+            status_label=label,
+            next_action=next_action,
+        )
+
+    # ======================================================
+    # LEAD
+    # ======================================================
+
+    async def analyze_lead(
+        self,
+        lead: Mapping[str, Any],
+    ) -> AILeadAnalysis:
+        props = lead.get("properties") or {}
+        workspace_id = lead.get("workspace_id")
+        cfg = await self._get_workspace_config(workspace_id)
+
+        status = (props.get("hs_lead_status") or "NEW").upper()
+        name = (
+            f"{props.get('firstname', '')} {props.get('lastname', '')}".strip()
+            or props.get("email", "Unknown Lead")
+        )
+
+        if status in {"CONNECTED", "OPEN"}:
+            label = "Active"
+            next_action = "Follow up within 24 hours."
+        elif status in {"IN_PROGRESS"}:
+            label = "In Progress"
+            next_action = "Continue nurturing — check last touchpoint."
+        elif status in {"UNQUALIFIED"}:
+            label = "Unqualified"
+            next_action = "Archive or reassign."
+        else:
+            label = "New"
+            next_action = "Assign and make first contact."
+
+        score = self.generate_score(props, cfg)
+
+        return AILeadAnalysis(
+            summary=f"Lead: {name} — Status: {status}",
+            status_label=label,
+            next_action=next_action,
+            score=score,
+        )
+
+    # ======================================================
+    # COMMUNICATION (SMS / WhatsApp / FB Messenger)
+    # ======================================================
+
+    async def analyze_communication(
+        self,
+        comm: Mapping[str, Any],
+    ) -> AICommunicationAnalysis:
+        props = comm.get("properties") or {}
+        channel = (props.get("hs_communication_channel_type") or "Unknown").title()
+        body = props.get("hs_communication_body") or ""
+
+        if len(body) > 100:  # noqa: PLR2004
+            body = body[:97] + "..."
+
+        return AICommunicationAnalysis(
+            summary=(
+                f"{channel} message: {body}" if body else f"{channel} message logged."
+            ),
+            channel=channel,
+            next_action="Reply via same channel if pending.",
+        )
+
+    # ======================================================
+    # APPOINTMENT
+    # ======================================================
+
+    async def analyze_appointment(
+        self,
+        appt: Mapping[str, Any],
+    ) -> AIAppointmentAnalysis:
+        props = appt.get("properties") or {}
+        name = props.get("hs_appointment_name") or "Appointment"
+        status = (props.get("hs_appointment_status") or "SCHEDULED").upper()
+        start = props.get("hs_appointment_start_time") or ""
+
+        if status == "COMPLETED":
+            label = "Completed"
+            next_action = "Log outcome and follow up."
+        elif status == "CANCELLED":
+            label = "Cancelled"
+            next_action = "Reschedule if still relevant."
+        elif status == "NO_SHOW":
+            label = "No Show"
+            next_action = "Reach out and reschedule immediately."
+        else:
+            label = "Scheduled"
+            next_action = "Send reminder 24h before."
+
+        summary = f"{name} — {label}"
+        if start:
+            summary += f" (starts: {start[:10]})"
+
+        return AIAppointmentAnalysis(
+            summary=summary,
             status_label=label,
             next_action=next_action,
         )

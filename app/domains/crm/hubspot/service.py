@@ -4,13 +4,13 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.core.exceptions import HubSpotAPIError, IntegrationNotFoundError
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 from app.db.records import Provider
 from app.db.storage_service import StorageService
 from app.domains.crm.base import BaseCRMService
 from app.providers.hubspot.client import HubSpotClient
 from app.utils.cache import AsyncTTL
-from app.utils.helpers import normalize_object_type
+from app.utils.helpers import normalize_object_type, pluralize_hs_type
 
 logger = get_logger("hubspot.service")
 
@@ -31,11 +31,26 @@ class HubSpotService(BaseCRMService):
 
     def __init__(self, corr_id: str, *, storage: StorageService | None = None) -> None:
         self.corr_id = corr_id
-        self.log = CorrelationAdapter(logger, corr_id)
         self.storage = storage or StorageService(corr_id=corr_id)
+        # Per-instance client cache: avoids re-fetching tokens from
+        # Supabase on every method call within the same request.
+        self._client_cache: dict[str, HubSpotClient] = {}
 
     # Token management
     async def _load_tokens(self, workspace_id: str) -> tuple[str, str | None, str]:
+        """Loads access and refresh tokens for the given workspace.
+
+        Args:
+            workspace_id: The workspace identifier.
+
+        Returns:
+            A tuple of (access_token, refresh_token, workspace_id).
+
+        Raises:
+            IntegrationNotFoundError: If no integration exists.
+            HubSpotAPIError: If access token is missing.
+
+        """
         integration = await self.storage.get_integration(
             workspace_id=workspace_id,
             provider=Provider.HUBSPOT,
@@ -55,6 +70,18 @@ class HubSpotService(BaseCRMService):
 
     # Client lifecycle
     async def get_client(self, workspace_id: str) -> HubSpotClient:
+        """Builds or returns a cached HubSpotClient for this workspace.
+
+        Args:
+            workspace_id: The workspace identifier.
+
+        Returns:
+            An authenticated HubSpotClient.
+
+        """
+        if workspace_id in self._client_cache:
+            return self._client_cache[workspace_id]
+
         access_token, refresh_token, true_workspace_id = await self._load_tokens(
             workspace_id
         )
@@ -76,7 +103,7 @@ class HubSpotService(BaseCRMService):
         client.on_token_refresh = _handle_refresh
 
         async def _handle_revocation() -> None:
-            self.log.warning(
+            logger.warning(
                 "Reactive uninstallation triggered for workspace_id=%s",
                 true_workspace_id,
             )
@@ -92,6 +119,7 @@ class HubSpotService(BaseCRMService):
 
         client.on_token_revoked = _handle_revocation
 
+        self._client_cache[workspace_id] = client
         return client
 
     # Persistence logic
@@ -101,11 +129,40 @@ class HubSpotService(BaseCRMService):
         new_access: str,
         new_refresh: str | None,
     ) -> None:
-        await self.storage.update_tokens(
-            workspace_id=workspace_id,
-            provider=Provider.HUBSPOT,
-            new_at=new_access,
-            new_rt=new_refresh,
+        """Persists rotated tokens to storage.
+
+        Args:
+            workspace_id: The workspace owning the tokens.
+            new_access: The newly rotated access token.
+            new_refresh: The new refresh token (if rotated).
+
+        """
+        integration = await self.storage.get_integration(workspace_id, Provider.HUBSPOT)
+        if not integration:
+            logger.error(
+                "Could not find HubSpot integration to persist tokens for "
+                "workspace_id=%s",
+                workspace_id,
+            )
+            return
+
+        credentials = dict(integration.credentials or {})
+        credentials["access_token"] = new_access
+        if new_refresh:
+            credentials["refresh_token"] = new_refresh
+
+        await self.storage.upsert_integration(
+            {
+                "id": integration.id,
+                "workspace_id": workspace_id,
+                "provider": Provider.HUBSPOT,
+                "credentials": credentials,
+                "metadata": integration.metadata,
+            }
+        )
+        logger.info(
+            "Successfully persisted rotated HubSpot tokens for workspace_id=%s",
+            workspace_id,
         )
 
     # Domain operations
@@ -136,20 +193,20 @@ class HubSpotService(BaseCRMService):
                 results = await self.search_contacts(workspace_id, query)
                 url_segment = "contact"
             case "deals" | "deal":
-                results = await self.search_deals(workspace_id, query)
+                results = await self._search_by_type(workspace_id, "deals", query)
                 url_segment = "deal"
             case "companies" | "company":
-                results = await self.search_companies(workspace_id, query)
+                results = await self._search_by_type(workspace_id, "companies", query)
                 url_segment = "company"
             case "tickets" | "ticket":
-                results = await self.search_tickets(workspace_id, query)
+                results = await self._search_by_type(workspace_id, "tickets", query)
                 url_segment = "ticket"
             case "tasks" | "task":
-                results = await self.search_tasks(workspace_id, query)
+                results = await self._search_by_type(workspace_id, "tasks", query)
                 url_segment = "task"
 
             case _:
-                self.log.error("Unknown HubSpot object_type=%s", object_type)
+                logger.error("Unknown HubSpot object_type=%s", object_type)
                 return []
 
         return await self.inject_urls(workspace_id, results, url_segment)
@@ -160,7 +217,17 @@ class HubSpotService(BaseCRMService):
         results: list[dict[str, Any]],
         object_type: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Injects `hs_url` deep links and standardizes `type` on a list of results."""
+        """Injects `hs_url` deep links and standardizes `type` on a list of results.
+
+        Args:
+            workspace_id: The workspace identifier.
+            results: The list of HubSpot objects to enrich.
+            object_type: Optional override for the object type.
+
+        Returns:
+            The enriched list of objects.
+
+        """
         if not results:
             return results
 
@@ -195,38 +262,58 @@ class HubSpotService(BaseCRMService):
         workspace_id: str,
         query: str,
     ) -> list[dict[str, Any]]:
+        """Search contacts — kept separate for email fallback logic.
+
+        Args:
+            workspace_id: The workspace identifier.
+            query: The search string (email or name).
+
+        Returns:
+            A list of matching contact objects.
+
+        """
         client = await self.get_client(workspace_id)
         return await client.search_contacts(query)
 
-    async def search_deals(
+    async def _search_by_type(
         self,
         workspace_id: str,
+        object_type: str,
         query: str,
     ) -> list[dict[str, Any]]:
-        client = await self.get_client(workspace_id)
-        return await client.search_deals(query)
+        """Generic search delegate for any object type.
 
-    async def search_leads(
-        self,
-        workspace_id: str,
-        query: str,
-    ) -> list[dict[str, Any]]:
-        client = await self.get_client(workspace_id)
-        return await client.search_leads(query)
+        Args:
+            workspace_id: The workspace identifier.
+            object_type: The HubSpot object type (e.g. deals).
+            query: The search query string.
 
-    async def search_companies(
-        self,
-        workspace_id: str,
-        query: str,
-    ) -> list[dict[str, Any]]:
+        Returns:
+            A list of matching CRM objects.
+
+        """
         client = await self.get_client(workspace_id)
-        return await client.search_companies(query)
+        return await client.search_objects(
+            object_type,
+            query_string=query,
+            properties=client._SEARCH_PROPS.get(object_type, []),
+        )
 
     async def create_contact(
         self,
         workspace_id: str,
         properties: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        """Creates a new contact in HubSpot.
+
+        Args:
+            workspace_id: The workspace identifier.
+            properties: The fields to set on the contact.
+
+        Returns:
+            The created HubSpot object.
+
+        """
         client = await self.get_client(workspace_id)
         return await client.create_contact(properties)
 
@@ -235,6 +322,16 @@ class HubSpotService(BaseCRMService):
         workspace_id: str,
         properties: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        """Creates a new task in HubSpot.
+
+        Args:
+            workspace_id: The workspace identifier.
+            properties: The fields to set on the task.
+
+        Returns:
+            The created HubSpot object.
+
+        """
         client = await self.get_client(workspace_id)
         return await client.create_task(properties)
 
@@ -246,7 +343,19 @@ class HubSpotService(BaseCRMService):
         to_type: str,
         to_id: str,
     ) -> None:
-        """Associate two CRM objects using HubSpot defined types."""
+        """Associate two CRM objects using HubSpot defined types.
+
+        Args:
+            workspace_id: The workspace identifier.
+            from_type: The source object type (e.g. task).
+            from_id: The source object ID.
+            to_type: The target object type (e.g. contact).
+            to_id: The target object ID.
+
+        Raises:
+            ValueError: If the association type is not supported.
+
+        """
         client = await self.get_client(workspace_id)
 
         # HubSpot association types for Task (from)
@@ -271,6 +380,9 @@ class HubSpotService(BaseCRMService):
             elif to_type in ("company", "companies"):
                 type_id = 26
 
+        if type_id == 0:
+            raise ValueError(f"Unsupported association: {from_type} → {to_type}")
+
         await client.request(
             "PUT",
             f"associations/{from_type}/{to_type}/batch/create",
@@ -293,11 +405,23 @@ class HubSpotService(BaseCRMService):
     async def get_contact(
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
+        """Retrieves a single contact from HubSpot.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_id: The contact ID.
+
+        Returns:
+            The contact object or None if not found.
+
+        """
         client = await self.get_client(workspace_id=workspace_id)
         result = await client.get_contact(object_id)
         if result:
             results = await self.inject_urls(workspace_id, [result], "contact")
-            return results[0]
+            res = results[0]
+            res["workspace_id"] = workspace_id
+            return res
         return None
 
     async def get_object_engagements(
@@ -306,21 +430,24 @@ class HubSpotService(BaseCRMService):
         object_type: str,
         object_id: str,
     ) -> list[dict[str, Any]]:
+        """Fetches all engagements (emails, calls, etc.) associated with a CRM object.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_type: The source CRM object type.
+            object_id: The specific record ID.
+
+        Returns:
+            A list of engagement objects.
+
+        """
         key = f"engagements:{workspace_id}:{object_type}:{object_id}"
 
         async def _fetch():
             client = await self.get_client(workspace_id=workspace_id)
 
             # Map to plural for associations API
-            hs_type = object_type.lower()
-            if hs_type in ("contact", "0-1"):
-                hs_type = "contacts"
-            elif hs_type in ("company", "0-2"):
-                hs_type = "companies"
-            elif hs_type in ("deal", "0-3"):
-                hs_type = "deals"
-            elif hs_type in ("ticket", "0-5"):
-                hs_type = "tickets"
+            hs_type = pluralize_hs_type(object_type)
 
             engagements = []
 
@@ -368,7 +495,7 @@ class HubSpotService(BaseCRMService):
                             engagements.append(d)
 
                 except Exception as e:
-                    self.log.error(
+                    logger.error(
                         "Failed to fetch %s engagements for %s %s: %s",
                         entity_type,
                         object_type,
@@ -383,21 +510,45 @@ class HubSpotService(BaseCRMService):
     async def get_deal(
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
+        """Retrieves a single deal from HubSpot.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_id: The deal ID.
+
+        Returns:
+            The deal object or None if not found.
+
+        """
         client = await self.get_client(workspace_id=workspace_id)
         result = await client.get_deal(object_id)
         if result:
             results = await self.inject_urls(workspace_id, [result], "deal")
-            return results[0]
+            res = results[0]
+            res["workspace_id"] = workspace_id
+            return res
         return None
 
     async def get_company(
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
+        """Retrieves a single company from HubSpot.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_id: The company ID.
+
+        Returns:
+            The company object or None if not found.
+
+        """
         client = await self.get_client(workspace_id=workspace_id)
         result = await client.get_company(object_id)
         if result:
             results = await self.inject_urls(workspace_id, [result], "company")
-            return results[0]
+            res = results[0]
+            res["workspace_id"] = workspace_id
+            return res
         return None
 
     async def get_object(
@@ -433,44 +584,56 @@ class HubSpotService(BaseCRMService):
 
             case "task":
                 result = await self.get_task(workspace_id, object_id)
+            case "meeting":
+                result = await self.get_meeting(workspace_id, object_id)
             case "conversation" | "thread":
                 client = await self.get_client(workspace_id)
                 result = await client.get_inbox_thread(object_id)
             case _:
-                self.log.error("Unknown object_type=%s for get_object", object_type)
+                logger.error("Unknown object_type=%s for get_object", object_type)
 
         if result:
             result["type"] = object_type
 
         return result
 
-    async def search_tickets(
-        self,
-        workspace_id: str,
-        query: str,
-    ) -> list[dict[str, Any]]:
-        client = await self.get_client(workspace_id)
-        return await client.search_tickets(query)
-
-    async def search_tasks(
-        self,
-        workspace_id: str,
-        query: str,
-    ) -> list[dict[str, Any]]:
-        client = await self.get_client(workspace_id)
-        return await client.search_tasks(query)
-
     async def get_ticket(
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
+        """Retrieves a single ticket from HubSpot.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_id: The ticket ID.
+
+        Returns:
+            The ticket object or None if not found.
+
+        """
         client = await self.get_client(workspace_id=workspace_id)
-        return await client.get_ticket(object_id)
+        result = await client.get_ticket(object_id)
+        if result:
+            result["workspace_id"] = workspace_id
+        return result
 
     async def get_task(
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
+        """Retrieves a single task from HubSpot.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_id: The task ID.
+
+        Returns:
+            The task object or None if not found.
+
+        """
         client = await self.get_client(workspace_id=workspace_id)
-        return await client.get_task(object_id)
+        result = await client.get_task(object_id)
+        if result:
+            result["workspace_id"] = workspace_id
+        return result
 
     async def create_note(
         self,
@@ -480,7 +643,18 @@ class HubSpotService(BaseCRMService):
         associated_id: str,
         associated_type: str,
     ) -> dict[str, Any]:
-        """Wrapper to create a CRM note via HubSpotClient."""
+        """Creates a note in HubSpot and associates it with a CRM object.
+
+        Args:
+            workspace_id: The workspace identifier.
+            content: The note text.
+            associated_id: The CRM object to link the note to.
+            associated_type: The type of the associated object (e.g. contact).
+
+        Returns:
+            The created note object.
+
+        """
         client = await self.get_client(workspace_id)
         return await client.create_note(
             content=content,
@@ -497,12 +671,12 @@ class HubSpotService(BaseCRMService):
         """Sends a reply to a conversation thread.
 
         Args:
-            workspace_id (str): The workspace identifier.
-            thread_id (str): The conversation thread ID.
-            text (str): The reply text.
+            workspace_id: The workspace identifier.
+            thread_id: The conversation thread ID.
+            text: The reply text.
 
         Returns:
-            dict[str, Any]: The created message object.
+            The created message object.
 
         """
         client = await self.get_client(workspace_id)
@@ -518,7 +692,18 @@ class HubSpotService(BaseCRMService):
         object_id: str,
         to_object_type: str,
     ) -> list[dict[str, Any]]:
-        """Generic method to fetch and batch read any associated object type."""
+        """Generic method to fetch and batch read any associated object type.
+
+        Args:
+            workspace_id: The workspace identifier.
+            from_object_type: The source CRM object type.
+            object_id: The source record ID.
+            to_object_type: The plural type being fetched (e.g. deals).
+
+        Returns:
+            A list of enriched CRM objects.
+
+        """
         key = f"assoc:{workspace_id}:{from_object_type}:{object_id}:{to_object_type}"
 
         async def _fetch():
@@ -559,17 +744,20 @@ class HubSpotService(BaseCRMService):
     async def get_all_associations(
         self, workspace_id: str, object_type: str, object_id: str
     ) -> dict[str, list[dict[str, Any]]]:
-        """Fetch all primary associations for a given object."""
-        # Normalize the incoming object type into HubSpot's plural formulation
-        hs_type = object_type.lower()
-        if hs_type in ("contact", "0-1"):
-            hs_type = "contacts"
-        elif hs_type in ("company", "0-2"):
-            hs_type = "companies"
-        elif hs_type in ("deal", "0-3"):
-            hs_type = "deals"
-        elif hs_type in ("ticket", "0-5"):
-            hs_type = "tickets"
+        """Fetch all primary associations (contacts, deals, companies, tickets)
+        for an object.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_type: The source CRM object type.
+            object_id: The source record ID.
+
+        Returns:
+            A mapping of type to list of associated objects.
+
+        """
+        # Normalize the incoming object type into HubSpot's plural form
+        hs_type = pluralize_hs_type(object_type)
 
         import asyncio
 
@@ -589,7 +777,7 @@ class HubSpotService(BaseCRMService):
         final_associations = {}
         for target, res in zip(tasks.keys(), results, strict=False):
             if isinstance(res, Exception):
-                self.log.error(f"Failed to fetch {target} associations: {res}")
+                logger.error(f"Failed to fetch {target} associations: {res}")
                 final_associations[target] = []
             else:
                 final_associations[target] = res
@@ -600,10 +788,10 @@ class HubSpotService(BaseCRMService):
         """Fetch deal pipelines with global TTL caching.
 
         Args:
-            workspace_id (str): The workspace identifier.
+            workspace_id: The workspace identifier.
 
         Returns:
-            list[dict[str, Any]]: A list of deal pipelines.
+            A list of deal pipelines.
 
         """
         key = f"pipelines:{workspace_id}"
@@ -620,7 +808,17 @@ class HubSpotService(BaseCRMService):
         deal_id: str,
         properties: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Update a deal's properties."""
+        """Updates a deal's properties.
+
+        Args:
+            workspace_id: The workspace identifier.
+            deal_id: The deal record ID.
+            properties: The fields to update.
+
+        Returns:
+            The primary updated object.
+
+        """
         client = await self.get_client(workspace_id)
         return await client.update_deal(deal_id, properties)
 
@@ -630,7 +828,17 @@ class HubSpotService(BaseCRMService):
         contact_id: str,
         properties: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Update a contact's properties."""
+        """Updates a contact's properties.
+
+        Args:
+            workspace_id: The workspace identifier.
+            contact_id: The contact record ID.
+            properties: The fields to update.
+
+        Returns:
+            The primary updated object.
+
+        """
         client = await self.get_client(workspace_id)
         return await client.update_contact(contact_id, properties)
 
@@ -640,7 +848,17 @@ class HubSpotService(BaseCRMService):
         company_id: str,
         properties: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Update a company's properties."""
+        """Updates a company's properties.
+
+        Args:
+            workspace_id: The workspace identifier.
+            company_id: The company record ID.
+            properties: The fields to update.
+
+        Returns:
+            The primary updated object.
+
+        """
         client = await self.get_client(workspace_id)
         return await client.update_company(company_id, properties)
 
@@ -648,10 +866,10 @@ class HubSpotService(BaseCRMService):
         """Fetch owners with global TTL caching.
 
         Args:
-            workspace_id (str): The workspace identifier.
+            workspace_id: The workspace identifier.
 
         Returns:
-            list[dict[str, Any]]: A list of HubSpot owners.
+            A list of HubSpot owners.
 
         """
         key = f"owners:{workspace_id}"
@@ -667,10 +885,18 @@ class HubSpotService(BaseCRMService):
         workspace_id: str,
         task: dict[str, Any],
     ) -> dict[str, Any]:
-        """Fetch additional context for a task (owner name, associations)."""
-        client = await self.get_client(workspace_id)
+        """Fetch additional context for a task (owner name, associations).
+
+        Args:
+            workspace_id: The workspace identifier.
+            task: The raw task object from HubSpot.
+
+        Returns:
+            A dictionary containing owner_name, contacts, and companies.
+
+        """
         props = task.get("properties", {})
-        context = {
+        context: dict[str, Any] = {
             "owner_name": "Unassigned",
             "contacts": [],
             "companies": [],
@@ -688,30 +914,25 @@ class HubSpotService(BaseCRMService):
                     "email", "Unknown"
                 )
 
-        # 2. Fetch Associated Contacts
-        contact_ids = await client.get_associations("tasks", task["id"], "contacts")
-        if contact_ids:
-            contacts = await client.batch_read(
-                "contacts", contact_ids, properties=["firstname", "lastname", "email"]
-            )
-            for c in contacts:
-                c_props = c.get("properties", {})
-                name = (
-                    f"{c_props.get('firstname', '')} {c_props.get('lastname', '')}"
-                ).strip()
-                email = c_props.get("email")
-                context["contacts"].append(name or email or "Unknown Contact")
+        # 2. Fetch via existing get_associated_objects
+        assoc_contacts = await self.get_associated_objects(
+            workspace_id, "tasks", task["id"], "contacts"
+        )
+        for c in assoc_contacts:
+            c_props = c.get("properties", {})
+            name = (
+                f"{c_props.get('firstname', '')} {c_props.get('lastname', '')}"
+            ).strip()
+            email = c_props.get("email")
+            context["contacts"].append(name or email or "Unknown Contact")
 
-        # 3. Fetch Associated Companies
-        company_ids = await client.get_associations("tasks", task["id"], "companies")
-        if company_ids:
-            companies = await client.batch_read(
-                "companies", company_ids, properties=["name", "domain"]
-            )
-            for c in companies:
-                c_props = c.get("properties", {})
-                name = c_props.get("name") or c_props.get("domain") or "Unknown Company"
-                context["companies"].append(name)
+        assoc_companies = await self.get_associated_objects(
+            workspace_id, "tasks", task["id"], "companies"
+        )
+        for c in assoc_companies:
+            c_props = c.get("properties", {})
+            name = c_props.get("name") or c_props.get("domain") or "Unknown Company"
+            context["companies"].append(name)
 
         return context
 
@@ -745,6 +966,16 @@ class HubSpotService(BaseCRMService):
     async def get_meeting(
         self, workspace_id: str, object_id: str
     ) -> dict[str, Any] | None:
+        """Retrieves a single meeting from HubSpot.
+
+        Args:
+            workspace_id: The workspace identifier.
+            object_id: The meeting ID.
+
+        Returns:
+            The meeting object or None if not found.
+
+        """
         client = await self.get_client(workspace_id=workspace_id)
         return await client.get_meetings(object_id)
 
@@ -754,7 +985,17 @@ class HubSpotService(BaseCRMService):
         meeting_id: str,
         properties: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Update a meeting's properties."""
+        """Updates a meeting's properties.
+
+        Args:
+            workspace_id: The workspace identifier.
+            meeting_id: The meeting record ID.
+            properties: The fields to update.
+
+        Returns:
+            The primary updated object.
+
+        """
         client = await self.get_client(workspace_id)
         return await client.request(
             "PATCH", f"objects/meetings/{meeting_id}", json={"properties": properties}
@@ -766,7 +1007,17 @@ class HubSpotService(BaseCRMService):
         properties: Mapping[str, Any],
         contact_id: str | None = None,
     ) -> dict[str, Any]:
-        """Create a meeting and optionally associate it with a contact."""
+        """Creates a meeting and optionally associates it with a contact.
+
+        Args:
+            workspace_id: The workspace identifier.
+            properties: The fields to set on the meeting.
+            contact_id: Optional contact ID to associate.
+
+        Returns:
+            The created meeting object.
+
+        """
         client = await self.get_client(workspace_id)
 
         associations = None
@@ -788,8 +1039,11 @@ class HubSpotService(BaseCRMService):
         return await client.create_object("meetings", properties, associations)
 
     async def uninstall_app(self, workspace_id: str) -> None:
-        """Description:
-        Uninstalls the app from the HubSpot account.
+        """Uninstalls the app from the HubSpot account.
+
+        Args:
+            workspace_id: The workspace to uninstall.
+
         """
         client = await self.get_client(workspace_id)
         await client.uninstall_app()

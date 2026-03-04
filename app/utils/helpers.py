@@ -8,16 +8,17 @@ logger = get_logger("utils.http")
 
 
 def normalize_object_type(object_type: str) -> str:
-    """Description:
-        Centralized normalization for HubSpot object types.
-        Converts to lowercase, handles pluralization (e.g., 'contacts' ->
-        'contact'), and maps internal numerical type IDs (e.g., '0-1' -> 'contact').
+    """Normalize a HubSpot object type to its singular form.
+
+    Converts to lowercase, handles pluralization (e.g., 'contacts' ->
+    'contact'), and maps internal numerical type IDs (e.g., '0-1' ->
+    'contact').
 
     Args:
-        object_type (str): The raw object type string.
+        object_type: The raw object type string.
 
     Returns:
-        str: Normalized singular object type.
+        Normalized singular object type.
 
     """
     # Map internal HubSpot type IDs used by UI extensions
@@ -30,6 +31,38 @@ def normalize_object_type(object_type: str) -> str:
 
     object_type = type_map.get(object_type, object_type)
     return object_type.lower().replace("ies", "y").rstrip("s")
+
+
+# Centralized singular → plural mapping for HubSpot API endpoints.
+_PLURAL_MAP: dict[str, str] = {
+    "contact": "contacts",
+    "0-1": "contacts",
+    "company": "companies",
+    "0-2": "companies",
+    "deal": "deals",
+    "0-3": "deals",
+    "ticket": "tickets",
+    "0-5": "tickets",
+}
+
+
+def pluralize_hs_type(object_type: str) -> str:
+    """Convert any HubSpot object type to plural API form.
+
+    Handles both singular names and numeric type IDs.
+
+    Args:
+        object_type: Raw object type (e.g. 'contact', '0-1').
+
+    Returns:
+        Plural API form (e.g. 'contacts').
+
+    """
+    key = object_type.lower()
+    if key in _PLURAL_MAP:
+        return _PLURAL_MAP[key]
+    # Already plural or unknown — return as-is
+    return key
 
 
 class HTTPClient:

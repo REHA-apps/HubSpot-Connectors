@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: SecretStr = Field(default=SecretStr(""))
     STRIPE_PRO_PRICE_ID: str = Field(default="")
 
+    # AI settings
+    OPENAI_API_KEY: SecretStr = Field(default=SecretStr(""))
+    AI_MODEL: str = Field(default="gpt-4o-mini")
+
     # SMTP Settings for Contact Form
     SMTP_HOST: str = Field(default="smtp.gmail.com")
     SMTP_PORT: int = Field(default=587)
@@ -98,24 +102,20 @@ class Settings(BaseSettings):
     )
 
     def dump(self) -> Mapping[str, Any]:
-        """Description:
-            Returns a safe, scrubbed snapshot of the current configuration.
+        """Return a safe, scrubbed snapshot of the configuration.
 
         Returns:
-            Mapping[str, Any]: Configuration dictionary with sensitive values masked.
-
-        Rules Applied:
-            - Masks all SecretStr instances with '***'.
+            Configuration dictionary with sensitive values masked.
 
         """
-        data = self.model_dump()
-
-        def scrub(value: Any) -> Any:
+        result: dict[str, Any] = {}
+        for name in self.model_fields:
+            value = getattr(self, name)
             if isinstance(value, SecretStr):
-                return "***"
-            return value
-
-        return {key: scrub(value) for key, value in data.items()}
+                result[name] = "***"
+            else:
+                result[name] = value
+        return result
 
     @computed_field(repr=False)
     @property
@@ -173,9 +173,11 @@ class Settings(BaseSettings):
             return
 
         missing = []
-        for name, value in self.model_dump().items():
-            if isinstance(value, SecretStr) and not value.get_secret_value():
-                missing.append(name)
+        for name, field_info in self.model_fields.items():
+            if field_info.annotation is SecretStr:
+                val = getattr(self, name)
+                if not val.get_secret_value():
+                    missing.append(name)
 
         if missing:
             raise RuntimeError(f"Missing required production secrets: {missing}")

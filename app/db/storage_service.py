@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 from app.db.records import (
     AIScoreRecord,
     IntegrationRecord,
@@ -30,8 +30,6 @@ class StorageService:
 
     def __init__(self, corr_id: str) -> None:
         self.client = SupabaseClient(corr_id=corr_id)
-        self.log = CorrelationAdapter(logger, corr_id)
-
         self.workspaces = SupabaseRepository[WorkspaceRecord](
             client=self.client,
             table="workspaces",
@@ -67,9 +65,30 @@ class StorageService:
             corr_id=corr_id,
         )
 
+    async def _resolve_internal_workspace_id(self, workspace_id: str) -> str:
+        """Helper to resolve an internal workspace UUID from a numeric portal ID.
+
+        If workspace_id is numeric, it performs a lookup to find the actual
+        workspace_id from the HubSpot integration record.
+        """
+        if not workspace_id.isdigit():
+            return workspace_id
+
+        # Numeric ID detected; resolve to internal UUID
+        integration = await self.get_integration_by_portal_id(portal_id=workspace_id)
+        if not integration:
+            logger.warning(
+                "Could not resolve internal workspace_id for portal %s", workspace_id
+            )
+            return (
+                workspace_id  # Fallback to original, error will likely occur downstream
+            )
+
+        return integration.workspace_id
+
     # Workspace operations
     async def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None:
-        self.log.info("Fetching workspace workspace_id=%s", workspace_id)
+        logger.info("Fetching workspace workspace_id=%s", workspace_id)
         return await self.workspaces.fetch_single({"id": workspace_id})
 
     async def upsert_workspace(  # noqa: PLR0913
@@ -100,13 +119,13 @@ class StorageService:
         if install_date:
             payload["install_date"] = install_date
 
-        self.log.info("Upserting workspace id=%s", workspace_id)
+        logger.info("Upserting workspace id=%s", workspace_id)
         return await self.workspaces.upsert(payload)
 
     async def get_workspace_by_stripe_customer_id(
         self, customer_id: str
     ) -> WorkspaceRecord | None:
-        self.log.info("Fetching workspace by stripe_customer_id=%s", customer_id)
+        logger.info("Fetching workspace by stripe_customer_id=%s", customer_id)
         return await self.workspaces.fetch_single({"stripe_customer_id": customer_id})
 
     async def ensure_workspace(self, workspace_id: str) -> WorkspaceRecord:
@@ -124,18 +143,18 @@ class StorageService:
         return ws or await self.upsert_workspace(workspace_id)
 
     async def delete_workspace(self, workspace_id: str) -> int:
-        self.log.info("Deleting workspace workspace_id=%s", workspace_id)
+        logger.info("Deleting workspace workspace_id=%s", workspace_id)
         return await self.workspaces.delete({"id": workspace_id})
 
     async def list_all_workspaces(self) -> list[WorkspaceRecord]:
-        self.log.info("Listing all workspaces")
+        logger.info("Listing all workspaces")
         return await self.workspaces.fetch_many({})
 
     # Integration operations
     async def get_integration(
         self, workspace_id: str, provider: Provider
     ) -> IntegrationRecord | None:
-        self.log.info(
+        logger.info(
             "Fetching integration workspace_id=%s provider=%s",
             workspace_id,
             provider,
@@ -145,7 +164,7 @@ class StorageService:
         # workspace_id is strictly numeric,
         # it is a HubSpot portal_id instead of our internal workspace_id.
         if provider == Provider.HUBSPOT and workspace_id.isdigit():
-            self.log.info(
+            logger.info(
                 "Numeric ID detected, using portal_id lookup for %s", workspace_id
             )
             return await self.get_integration_by_portal_id(portal_id=workspace_id)
@@ -177,7 +196,7 @@ class StorageService:
         self,
         slack_team_id: str,
     ) -> IntegrationRecord | None:
-        self.log.info("Fetching Slack integration slack_team_id=%s", slack_team_id)
+        logger.info("Fetching Slack integration slack_team_id=%s", slack_team_id)
 
         # 1. Resolve Workspace ID from mapping cache
         async def fetch_record_directly():
@@ -210,7 +229,7 @@ class StorageService:
         self,
         portal_id: str,
     ) -> IntegrationRecord | None:
-        self.log.info("Fetching HubSpot integration portal_id=%s", portal_id)
+        logger.info("Fetching HubSpot integration portal_id=%s", portal_id)
 
         async def fetch_record_directly():
             return await self.integrations.fetch_single(
@@ -238,16 +257,16 @@ class StorageService:
         self,
         workspace_id: str,
     ) -> list[IntegrationRecord]:
-        self.log.info("Fetching all integrations for workspace_id=%s", workspace_id)
+        logger.info("Fetching all integrations for workspace_id=%s", workspace_id)
         # We don't cache list queries comfortably yet due to invalidation complexity
         return await self.integrations.fetch_many({"workspace_id": workspace_id})
 
     async def list_all_integrations(self) -> list[IntegrationRecord]:
-        self.log.info("Listing all integrations")
+        logger.info("Listing all integrations")
         return await self.integrations.fetch_many({})
 
     async def upsert_integration(self, payload: dict[str, Any]) -> IntegrationRecord:
-        self.log.info("Upserting integration provider=%s", payload.get("provider"))
+        logger.info("Upserting integration provider=%s", payload.get("provider"))
 
         res = await self.integrations.upsert(payload)
 
@@ -282,7 +301,7 @@ class StorageService:
         )
 
     async def delete_integration(self, workspace_id: str, provider: Provider) -> int:
-        self.log.info(
+        logger.info(
             "Deleting integration workspace_id=%s provider=%s",
             workspace_id,
             provider,
@@ -298,7 +317,7 @@ class StorageService:
         return count
 
     async def delete_all_integrations_for_workspace(self, workspace_id: str) -> int:
-        self.log.info(
+        logger.info(
             "Deleting all integrations for workspace_id=%s",
             workspace_id,
         )
@@ -316,8 +335,8 @@ class StorageService:
         self,
         workspace_id: str,
         provider: Provider,
-        new_at: str,
-        new_rt: str | None,
+        access_token: str,
+        refresh_token: str | None,
     ) -> IntegrationRecord | None:
         # Note: In a real app with JSONB updates, you might want a specialized
         # RPC or to fetch-then-save to avoid overwriting other credential keys.
@@ -329,12 +348,12 @@ class StorageService:
 
         new_credentials = {
             **existing.credentials,
-            "access_token": new_at,
-            "refresh_token": new_rt,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
         }
         payload = {"credentials": new_credentials}
 
-        self.log.info(
+        logger.info(
             "Updating tokens workspace_id=%s provider=%s",
             workspace_id,
             provider,
@@ -356,27 +375,32 @@ class StorageService:
         workspace_id: str,
         object_type: str,
         object_id: str,
-        channel_id: str,
+        channel_id: str | None = None,
     ) -> ThreadMappingRecord | None:
-        self.log.info(
+        workspace_id = await self._resolve_internal_workspace_id(workspace_id)
+        logger.info(
             "Fetching thread mapping workspace_id=%s object_type=%s object_id=%s",
             workspace_id,
             object_type,
             object_id,
         )
-        return await self.thread_mappings.fetch_single(
-            {
-                "workspace_id": workspace_id,
-                "object_type": object_type,
-                "object_id": object_id,
-                "channel_id": channel_id,
-            }
-        )
+        filters = {
+            "workspace_id": workspace_id,
+            "object_type": object_type,
+            "object_id": object_id,
+        }
+        if channel_id:
+            filters["channel_id"] = channel_id
+        return await self.thread_mappings.fetch_single(filters)
 
     async def upsert_thread_mapping(
         self, payload: dict[str, Any]
     ) -> ThreadMappingRecord:
-        self.log.info(
+        if "workspace_id" in payload:
+            payload["workspace_id"] = await self._resolve_internal_workspace_id(
+                payload["workspace_id"]
+            )
+        logger.info(
             "Upserting thread mapping object_id=%s thread_ts=%s",
             payload.get("object_id"),
             payload.get("thread_ts"),
@@ -389,7 +413,8 @@ class StorageService:
         channel_id: str,
         thread_ts: str,
     ) -> ThreadMappingRecord | None:
-        self.log.info(
+        workspace_id = await self._resolve_internal_workspace_id(workspace_id)
+        logger.info(
             "Fetching thread mapping workspace_id=%s channel_id=%s thread_ts=%s",
             workspace_id,
             channel_id,
@@ -415,12 +440,11 @@ class StorageService:
                 ignore_duplicates=True,
             )
 
-            if not response or getattr(response, "data", None):
-                return False
-            return True
+            data = getattr(response, "data", [])
+            return len(data) > 0
         except Exception as e:
             # Duplicate primary key = already processed
-            self.log.error("Stripe event already processed: %s %s", event_id, e)
+            logger.error("Stripe event already processed: %s %s", event_id, e)
             return False
 
     # Scoring config operations
@@ -428,17 +452,19 @@ class StorageService:
         self,
         workspace_id: str,
     ) -> ScoringConfigRecord | None:
-        return await self.scoring_configs.fetch_single({"workspace_id": workspace_id})
+        internal_id = await self._resolve_internal_workspace_id(workspace_id)
+        return await self.scoring_configs.fetch_single({"workspace_id": internal_id})
 
     async def ensure_scoring_config(
         self,
         workspace_id: str,
     ) -> ScoringConfigRecord:
-        config = await self.get_scoring_config(workspace_id)
+        internal_id = await self._resolve_internal_workspace_id(workspace_id)
+        config = await self.get_scoring_config(internal_id)
         if config:
             return config
 
-        return await self.scoring_configs.insert({"workspace_id": workspace_id})
+        return await self.scoring_configs.insert({"workspace_id": internal_id})
 
     async def upsert_ai_score(
         self,
@@ -449,17 +475,33 @@ class StorageService:
         score_reason: str,
         next_action: str,
     ) -> AIScoreRecord:
+        internal_id = await self._resolve_internal_workspace_id(workspace_id)
         payload = {
-            "workspace_id": workspace_id,
+            "workspace_id": internal_id,
             "object_type": object_type,
             "object_id": object_id,
             "score": score,
             "score_reason": score_reason,
             "next_action": next_action,
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
 
         return await self.ai_scores.upsert(payload)
+
+    async def get_ai_scores(
+        self,
+        workspace_id: str,
+        object_type: str,
+        object_id: str,
+    ) -> list[AIScoreRecord]:
+        internal_id = await self._resolve_internal_workspace_id(workspace_id)
+        return await self.ai_scores.fetch_many(
+            {
+                "workspace_id": internal_id,
+                "object_type": object_type,
+                "object_id": object_id,
+            }
+        )
 
     async def get_top_scored_objects(
         self,
@@ -467,8 +509,9 @@ class StorageService:
         object_type: str,
         limit: int = 10,
     ) -> list[AIScoreRecord]:
+        internal_id = await self._resolve_internal_workspace_id(workspace_id)
         return await self.ai_scores.fetch_many(
-            {"workspace_id": workspace_id, "object_type": object_type},
+            {"workspace_id": internal_id, "object_type": object_type},
             order_by=("score", "desc"),
             limit=limit,
         )

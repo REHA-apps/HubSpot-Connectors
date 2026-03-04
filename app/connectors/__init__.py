@@ -3,55 +3,55 @@ from __future__ import annotations
 
 def setup_connectors():
     """Register all available connectors with deferred imports."""
-    # HubSpot Routers
-    from app.connectors.hubspot.routers.actions_router import (
+    # HubSpot-Slack Unified Routers
+    from app.connectors.hubspot_slack.routers.hubspot.actions_router import (
         router as hs_actions,
     )
-    from app.connectors.hubspot.routers.ai_cards_router import (
+    from app.connectors.hubspot_slack.routers.hubspot.ai_cards_router import (
         router as hs_ai,
     )
-    from app.connectors.hubspot.routers.billing_router import (
+    from app.connectors.hubspot_slack.routers.hubspot.billing_router import (
         router as hs_billing,
     )
-    from app.connectors.hubspot.routers.extensions_router import (
+    from app.connectors.hubspot_slack.routers.hubspot.extensions_router import (
         router as hs_ext,
     )
-    from app.connectors.hubspot.routers.install_router import (
+    from app.connectors.hubspot_slack.routers.hubspot.install_router import (
         router as hs_install,
     )
-    from app.connectors.hubspot.routers.oauth_router import (
+    from app.connectors.hubspot_slack.routers.hubspot.oauth_router import (
         router as hs_oauth,
     )
-    from app.connectors.hubspot.routers.settings_router import (
+    from app.connectors.hubspot_slack.routers.hubspot.settings_router import (
         router as hs_settings,
     )
-    from app.connectors.hubspot.routers.ui_extension_router import (
+    from app.connectors.hubspot_slack.routers.hubspot.ui_extension_router import (
         router as hs_ui_ext,
     )
-    from app.connectors.hubspot.routers.webhook_router import (
+    from app.connectors.hubspot_slack.routers.hubspot.webhook_router import (
         router as hs_webhook,
     )
-    from app.connectors.hubspot.routers.workflow_actions_router import (
+    from app.connectors.hubspot_slack.routers.hubspot.workflow_actions_router import (
         router as hs_workflow,
     )
-    from app.connectors.registry import registry
 
     # Slack Routers
-    from app.connectors.slack.routers.events_router import (
+    from app.connectors.hubspot_slack.routers.slack.events_router import (
         router as slack_events,
     )
-    from app.connectors.slack.routers.install_router import (
+    from app.connectors.hubspot_slack.routers.slack.install_router import (
         router as slack_install,
     )
-    from app.connectors.slack.routers.interactions_router import (
+    from app.connectors.hubspot_slack.routers.slack.interactions_router import (
         router as slack_interactions,
     )
-    from app.connectors.slack.routers.oauth_router import (
+    from app.connectors.hubspot_slack.routers.slack.oauth_router import (
         router as slack_oauth,
     )
-    from app.connectors.slack.routers.webhook_router import (
+    from app.connectors.hubspot_slack.routers.slack.webhook_router import (
         router as slack_webhook,
     )
+    from app.connectors.registry import registry
 
     # HubSpot Registration
     registry.register(
@@ -71,19 +71,17 @@ def setup_connectors():
     )
 
     # Slack Registration
-    from app.connectors.slack.renderer import SlackRenderer
-    from app.connectors.slack.services.channel_service import (
-        ChannelService,
-    )
-    from app.connectors.slack.services.service import (
+    from app.connectors.hubspot_slack.services.service import (
         InteractionService,
     )
+    from app.connectors.hubspot_slack.slack_renderer import SlackRenderer
+    from app.domains.messaging.slack.service import SlackMessagingService
 
     registry.register(
         name="slack",
         renderer=SlackRenderer,
         service=InteractionService,
-        channel_service=ChannelService,
+        channel_service=SlackMessagingService,
         routers=[
             slack_install,
             slack_webhook,

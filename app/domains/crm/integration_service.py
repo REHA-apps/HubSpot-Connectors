@@ -3,22 +3,23 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.connectors.hubspot.channel import HubSpotChannel
-from app.connectors.slack.channel import SlackChannel
+if TYPE_CHECKING:
+    from app.domains.crm.hubspot.service import HubSpotService
+
+from app.connectors.hubspot_slack.hubspot_channel import HubSpotChannel
+from app.connectors.hubspot_slack.slack_channel import SlackChannel
 from app.core.exceptions import IntegrationNotFoundError
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 from app.db.records import IntegrationRecord, PlanTier, Provider
 from app.db.storage_service import StorageService
 from app.providers.slack.client import SlackClient
 
 logger = get_logger("integration.service")
 
-# Global tier cache — caches derived PlanTier values (not raw records).
-# Integration record caching is handled by StorageService's AsyncTTL caches.
-_GLOBAL_TIER_CACHE: dict[str, tuple[float, PlanTier]] = {}
-_TIER_CACHE_TTL = 300.0  # 5 minutes
+# Cache TTL (5 minutes)
+_TIER_CACHE_TTL = 300.0
 
 
 class IntegrationService:
@@ -36,14 +37,13 @@ class IntegrationService:
         storage: StorageService | None = None,
     ) -> None:
         self.corr_id = corr_id
-        self.log = CorrelationAdapter(logger, corr_id)
-
         self.storage = storage or StorageService(corr_id)
         self.slack_channel = SlackChannel(corr_id)
         self.hubspot_channel = HubSpotChannel(corr_id)
+        self._tier_cache: dict[str, tuple[float, PlanTier]] = {}
 
     @cached_property
-    def hubspot_service(self):
+    def hubspot_service(self) -> HubSpotService:
         """Lazy-loaded to avoid circular imports and unnecessary initialization."""
         from app.domains.crm.hubspot.service import HubSpotService
 
@@ -91,17 +91,17 @@ class IntegrationService:
     # Workspace resolution
     # ---------------------------------------------------------
     async def resolve_workspace(self, slack_team_id: str | None) -> str:
-        """Description:
-            Maps a Slack team ID to an internal workspace ID.
+        """Maps a Slack team ID to an internal workspace ID.
 
         Args:
-            slack_team_id (str | None): The team ID from Slack.
+            slack_team_id: The team ID from Slack.
 
         Returns:
-            str: Resolving workspace ID.
+            The resolved workspace ID.
 
-        Rules Applied:
-            - Raises ValueError if team ID is missing or integration is not found.
+        Raises:
+            ValueError: If team ID is missing.
+            IntegrationNotFoundError: If no Slack integration is found.
 
         """
         if not slack_team_id:
@@ -143,46 +143,56 @@ class IntegrationService:
         )
 
     async def get_tier(self, workspace_id: str) -> PlanTier:
-        """Description:
-            Retrieves the plan tier for a workspace, accounting for the 7-day trial.
+        """Retrieves the plan tier for a workspace, accounting for the 7-day trial.
 
         Args:
-            workspace_id (str): The workspace to check.
+            workspace_id: The workspace to check.
 
         Returns:
-            PlanTier: The assigned tier (FREE or PRO).
+            The assigned tier (FREE or PRO).
 
         """
         now = time.time()
-        if workspace_id in _GLOBAL_TIER_CACHE:
-            ts, tier = _GLOBAL_TIER_CACHE[workspace_id]
+        if workspace_id in self._tier_cache:
+            ts, tier = self._tier_cache[workspace_id]
             if now - ts < _TIER_CACHE_TTL:
                 return tier
-            del _GLOBAL_TIER_CACHE[workspace_id]
+            del self._tier_cache[workspace_id]
 
         workspace = await self.storage.get_workspace(workspace_id)
         if not workspace:
-            _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.FREE)
+            self._tier_cache[workspace_id] = (now, PlanTier.FREE)
             return PlanTier.FREE
 
         # 1. Active subscription check
         if workspace.subscription_status == "active" or workspace.plan == PlanTier.PRO:
-            _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.PRO)
+            self._tier_cache[workspace_id] = (now, PlanTier.PRO)
             return PlanTier.PRO
 
-        # 2. 7-day Trial check
+        # 2. Trial check
+        target_now = datetime.now(UTC)
+
+        # Check explicit trial end date first
+        if workspace.trial_ends_at:
+            ends_at = workspace.trial_ends_at
+            if ends_at.tzinfo is None:
+                ends_at = ends_at.replace(tzinfo=UTC)
+
+            if target_now <= ends_at:
+                self._tier_cache[workspace_id] = (now, PlanTier.PRO)
+                return PlanTier.PRO
+
+        # Fallback to 7-day default from installation
         install_date = workspace.install_date or workspace.created_at
         if install_date:
-            # Ensure we're comparing offset-aware datetimes
-            target_now = datetime.now(UTC)
             if install_date.tzinfo is None:
                 install_date = install_date.replace(tzinfo=UTC)
 
             if target_now <= install_date + timedelta(days=7):
-                _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.PRO)
+                self._tier_cache[workspace_id] = (now, PlanTier.PRO)
                 return PlanTier.PRO
 
-        _GLOBAL_TIER_CACHE[workspace_id] = (now, PlanTier.FREE)
+        self._tier_cache[workspace_id] = (now, PlanTier.FREE)
         return PlanTier.FREE
 
     async def is_pro_workspace(self, workspace_id: str) -> bool:
@@ -193,30 +203,66 @@ class IntegrationService:
     async def is_at_least_tier(
         self, workspace_id: str, required_tier: PlanTier
     ) -> bool:
-        """DEPRECATED: Use is_pro_workspace(workspace_id)."""
+        """Checks if a workspace meets or exceeds a required tier.
+
+        Args:
+            workspace_id: The ID of the workspace to check.
+            required_tier: The tier level required for the feature.
+
+        Returns:
+            True if accessible, False otherwise.
+
+        """
         if required_tier == PlanTier.FREE:
             return True
-        return await self.is_pro_workspace(workspace_id)
+
+        tier = await self.get_tier(workspace_id)
+        if required_tier == PlanTier.PRO:
+            return tier == PlanTier.PRO
+
+        return False
+
+    async def check_feature_access(self, workspace_id: str, feature_id: str) -> bool:
+        """Centralized check for feature-level access control.
+
+        Args:
+            workspace_id: The ID of the workspace.
+            feature_id: A unique identifier for the feature
+                (e.g., 'pricing_calculator').
+
+        Returns:
+            True if the workspace has access to the feature.
+
+        """
+        # All currently gated features require PRO tier
+        pro_features = {
+            "pricing_calculator",
+            "meeting_scheduler",
+            "ai_insights",
+            "note_logging",
+            "win_loss_post_mortem",
+        }
+
+        if feature_id in pro_features:
+            return await self.is_pro_workspace(workspace_id)
+
+        # Default to accessible for unknown/free features
+        return True
 
     # OAuth lifecycle
     async def handle_hubspot_oauth_callback(self, code: str, state: str | None) -> str:
-        """Description:
-            Processes the HubSpot OAuth callback for both Slack-first and
-            HubSpot-first flows.
+        """Processes the HubSpot OAuth callback for both Slack-first and
+        HubSpot-first flows.
 
         Args:
-            code (str): Authorization code from HubSpot.
-            state (str): Context identifier (Slack team ID or Workspace ID).
+            code: Authorization code from HubSpot.
+            state: Context identifier (Slack team ID or Workspace ID).
 
         Returns:
-            str: The resolved or created workspace ID.
-
-        Rules Applied:
-            - Exchanges tokens via HubSpotPlatform.
-            - Upserts both Workspace and Integration records.
+            The resolved or created workspace ID.
 
         """
-        self.log.info("Exchanging HubSpot OAuth code")
+        logger.info("Exchanging HubSpot OAuth code")
         token = await self.hubspot_channel.exchange_token(code)
 
         # Fetch token info to capture the installing user's email
@@ -233,11 +279,11 @@ class IntegrationService:
                 primary_email = info.get(
                     "user"
                 )  # 'user' field is the installer's email
-                self.log.info(
+                logger.info(
                     "Captured primary_email=%s from HubSpot token info", primary_email
                 )
         except Exception as e:
-            self.log.warning("Could not fetch HubSpot token info: %s", e)
+            logger.warning("Could not fetch HubSpot token info: %s", e)
 
         # Slack-first install (only if state was not dropped)
         slack_integration = None
@@ -246,7 +292,7 @@ class IntegrationService:
 
         if slack_integration:
             workspace_id = slack_integration.workspace_id
-            self.log.info("Resolved workspace via Slack-first install")
+            logger.info("Resolved workspace via Slack-first install")
             # Update primary_email on existing workspace if we have it
             if primary_email:
                 await self.storage.upsert_workspace(
@@ -264,7 +310,7 @@ class IntegrationService:
             )
             # Re-read to guarantee we have the assigned ID
             workspace_id = workspace.id
-            self.log.info("Created workspace via HubSpot-first install")
+            logger.info("Created workspace via HubSpot-first install")
 
         # Save HubSpot integration
         hs_payload: dict[str, Any] = {
@@ -291,29 +337,22 @@ class IntegrationService:
         # programmatically requires a numeric definition ID only available via hapikey.
         # Users can manually create workflows via HubSpot → Automations → Workflows,
         # selecting "Send Slack Message" from the action library.
-        self.log.info("HubSpot integration saved workspace_id=%s", workspace_id)
+        logger.info("HubSpot integration saved workspace_id=%s", workspace_id)
         return workspace_id
 
     # Slack OAuth callback
     async def handle_slack_oauth_callback(self, code: str, state: str | None) -> str:
-        """Description:
-            Processes the Slack OAuth callback following a successful authentication.
+        """Processes the Slack OAuth callback following a successful authentication.
 
         Args:
-            code (str): Authorization code from Slack.
-            state (str | None): Optional workspace ID context for HubSpot-first
-                                installs.
+            code: Authorization code from Slack.
+            state: Optional workspace ID context for HubSpot-first installs.
 
         Returns:
-            str: Finalized workspace ID.
-
-        Rules Applied:
-            - Exchanges tokens via SlackPlatform.
-            - Reuses existing workspaces if Slack-first install corresponds to an
-              existing team.
+            The finalized workspace ID.
 
         """
-        self.log.info("Exchanging Slack OAuth code")
+        logger.info("Exchanging Slack OAuth code")
 
         token = await self.slack_channel.exchange_token(code)
         team_id = token.team_id
@@ -326,11 +365,11 @@ class IntegrationService:
             workspace = await self.storage.get_workspace(state)
             if workspace:
                 workspace_id = workspace.id
-                self.log.info("Resolved workspace via state=%s", workspace_id)
+                logger.info("Resolved workspace via state=%s", workspace_id)
             else:
                 workspace = await self.storage.upsert_workspace(workspace_id=state)
                 workspace_id = workspace.id
-                self.log.warning("Invalid state=%s; created new workspace", state)
+                logger.warning("Invalid state=%s; created new workspace", state)
 
             # Check for existing Slack integration to prevent duplicate on re-install
             existing = await self.get_integration_by_slack_team_id(team_id)
@@ -340,13 +379,13 @@ class IntegrationService:
             existing = await self.get_integration_by_slack_team_id(team_id)
             if existing:
                 workspace_id = existing.workspace_id
-                self.log.info("Reusing existing workspace=%s", workspace_id)
+                logger.info("Reusing existing workspace=%s", workspace_id)
             else:
                 workspace = await self.storage.upsert_workspace(
                     workspace_id=team_id, install_date=datetime.now(UTC)
                 )
                 workspace_id = workspace.id
-                self.log.info("Created new workspace=%s", workspace_id)
+                logger.info("Created new workspace=%s", workspace_id)
 
         # Save Slack integration
         slack_payload: dict[str, Any] = {
@@ -369,7 +408,7 @@ class IntegrationService:
 
         await self.storage.upsert_integration(slack_payload)
 
-        self.log.info("Slack integration saved workspace_id=%s", workspace_id)
+        logger.info("Slack integration saved workspace_id=%s", workspace_id)
         return workspace_id
 
     # Uninstallation
@@ -379,18 +418,25 @@ class IntegrationService:
         trigger_hubspot_uninstall: bool = True,
         trigger_slack_uninstall: bool = True,
     ) -> None:
-        """Description:
-        Fully uninstalls all integrations for a workspace and resets the workflow state.
+        """Fully uninstalls all integrations for a workspace and resets the
+        workflow state.
+
         Triggers proactive uninstallation on both Slack and HubSpot if applicable.
+
+        Args:
+            workspace_id: The workspace to uninstall.
+            trigger_hubspot_uninstall: Whether to revoke the HubSpot token.
+            trigger_slack_uninstall: Whether to revoke the Slack token.
+
         """
         # 1. Re-entry Guard: Check if the workspace record exists before proceeding.
         # This prevents infinite loops if revocation is detected multiple times.
         workspace = await self.storage.get_workspace(workspace_id)
         if not workspace:
-            self.log.info("Workspace %s already uninstalled; skipping.", workspace_id)
+            logger.info("Workspace %s already uninstalled; skipping.", workspace_id)
             return
 
-        self.log.info("Resetting all integrations for workspace_id=%s", workspace_id)
+        logger.info("Resetting all integrations for workspace_id=%s", workspace_id)
 
         # 2. Proactively uninstall from HubSpot if present and requested
         if trigger_hubspot_uninstall:
@@ -399,10 +445,10 @@ class IntegrationService:
                     workspace_id, Provider.HUBSPOT
                 )
                 if hs_integration:
-                    self.log.info("Triggering outbound HubSpot uninstallation")
+                    logger.info("Triggering outbound HubSpot uninstallation")
                     await self.hubspot_service.uninstall_app(workspace_id)
             except Exception as exc:
-                self.log.warning(
+                logger.warning(
                     "Outbound HubSpot uninstallation failed: %s",
                     exc,
                 )
@@ -414,13 +460,13 @@ class IntegrationService:
                     workspace_id, Provider.SLACK
                 )
                 if slack_integration:
-                    self.log.info("Triggering outbound Slack uninstallation")
+                    logger.info("Triggering outbound Slack uninstallation")
                     # Attach token to channel
                     bot_token = slack_integration.slack_bot_token
                     self.slack_channel.bot_token = bot_token
                     await self.slack_channel.apps_uninstall()
             except Exception as exc:
-                self.log.warning("Outbound Slack uninstallation failed: %s", exc)
+                logger.warning("Outbound Slack uninstallation failed: %s", exc)
 
         # Clear integrations first (tokens, metadata)
         await self.storage.delete_all_integrations_for_workspace(workspace_id)
@@ -429,14 +475,23 @@ class IntegrationService:
         await self.storage.delete_workspace(workspace_id)
 
     async def uninstall_hubspot(self, workspace_id: str) -> None:
-        """Description:
-        Handles HubSpot uninstallation by resetting the workspace integrations.
+        """Handles HubSpot uninstallation by resetting the workspace integrations.
+
+        Args:
+            workspace_id: The workspace to uninstall.
+
         """
         await self.uninstall_workspace(workspace_id, trigger_hubspot_uninstall=False)
 
     async def get_slack_client(self, integration: IntegrationRecord) -> SlackClient:
-        """Description:
-        Returns a rotation-aware SlackClient for the given integration.
+        """Returns a rotation-aware SlackClient for the given integration.
+
+        Args:
+            integration: The record containing Slack credentials.
+
+        Returns:
+            A SlackClient with token refresh logic attached.
+
         """
         credentials = integration.credentials
         bot_token = credentials.get("slack_bot_token")
@@ -451,19 +506,21 @@ class IntegrationService:
         )
 
         # Set callback for token rotation
-        def on_refresh(t, r, e):
+        def on_refresh(
+            access_token: str, refresh_token: str | None, expires_at: int | None
+        ) -> None:
             import asyncio
 
             async def _persist_tokens():
                 try:
                     await self.update_slack_tokens(
                         workspace_id=integration.workspace_id,
-                        access_token=t,
-                        refresh_token=r,
-                        expires_at=e,
+                        access_token=access_token,
+                        refresh_token=refresh_token,
+                        expires_at=expires_at,
                     )
                 except Exception as exc:
-                    self.log.error(
+                    logger.error(
                         "Failed to persist rotated Slack tokens for workspace=%s: %s",
                         integration.workspace_id,
                         exc,
@@ -473,7 +530,7 @@ class IntegrationService:
                 loop = asyncio.get_running_loop()
                 loop.create_task(_persist_tokens())
             except RuntimeError:
-                self.log.error(
+                logger.error(
                     "No running event loop — cannot persist "
                     "rotated tokens for workspace=%s",
                     integration.workspace_id,
@@ -489,8 +546,14 @@ class IntegrationService:
         refresh_token: str | None,
         expires_at: int | None,
     ) -> None:
-        """Description:
-        Callback to persist rotated Slack tokens.
+        """Callback to persist rotated Slack tokens.
+
+        Args:
+            workspace_id: The workspace owning the tokens.
+            access_token: The new access token.
+            refresh_token: The new refresh token (if rotated).
+            expires_at: Expiry timestamp.
+
         """
         integration = await self.get_integration(workspace_id, provider=Provider.SLACK)
         if not integration:
@@ -510,12 +573,13 @@ class IntegrationService:
                 "metadata": integration.metadata,
             }
         )
-        self.log.info(
-            "Slack tokens rotated and persisted for workspace=%s", workspace_id
-        )
+        logger.info("Slack tokens rotated and persisted for workspace=%s", workspace_id)
 
     async def uninstall_slack(self, workspace_id: str) -> None:
-        """Description:
-        Handles Slack uninstallation by resetting the workspace integrations.
+        """Handles Slack uninstallation by resetting the workspace integrations.
+
+        Args:
+            workspace_id: The workspace to uninstall.
+
         """
         await self.uninstall_workspace(workspace_id, trigger_slack_uninstall=False)

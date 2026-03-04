@@ -51,15 +51,20 @@ async def lifespan(app: FastAPI):
                 # Wait 24 hours
                 await asyncio.sleep(24 * 3600)
 
-        # Run it as a background task
-        asyncio.create_task(billing_worker())
+        # Keep a strong reference so the task isn't garbage-collected
+        _bg_tasks: set[asyncio.Task[None]] = set()
+        task = asyncio.create_task(billing_worker())
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
 
         logger.info("Startup complete")
 
     yield
 
     with log_context("shutdown"):
-        logger.info("Shutting down — closing shared HTTP clients")
+        logger.info("Shutting down — cancelling background tasks")
+        for t in _bg_tasks:
+            t.cancel()
         await HTTPClient.close(corr_id="shutdown")
         logger.info("Shutdown complete")
 
@@ -71,19 +76,44 @@ app = FastAPI(
 )
 
 app.add_middleware(LogContextMiddleware)
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+app.add_middleware(
+    ProxyHeadersMiddleware,
+    trusted_hosts=(["*"] if settings.is_dev else ["127.0.0.1", "::1", "localhost"]),
+)
+
+_CORS_ORIGINS: dict[str, list[str]] = {
+    "dev": ["*"],
+    "staging": [
+        "https://app.hubspot.com",
+        "https://app-eu1.hubspot.com",
+    ],
+    "prod": [
+        "https://app.hubspot.com",
+        "https://app-eu1.hubspot.com",
+    ],
+}
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=_CORS_ORIGINS.get(settings.ENV, ["*"]),
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
 @app.exception_handler(AppError)
-async def app_exception_handler(request: Request, exc: AppError):
-    """Handles custom domain exceptions and returns structured JSON responses."""
+async def app_exception_handler(request: Request, exc: AppError) -> JSONResponse:
+    """Handles custom domain exceptions and returns structured JSON responses.
+
+    Args:
+        request: The incoming request.
+        exc: The raised exception.
+
+    Returns:
+        A JSON response with error details.
+
+    """
     corr_id = await get_corr_id(request)
     status_code = 400
 
@@ -104,9 +134,18 @@ async def app_exception_handler(request: Request, exc: AppError):
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Global exception handler to capture all unhandled errors.
+
     Logs the error with correlation ID and returns a clean JSON response.
+
+    Args:
+        request: The incoming request.
+        exc: The unhandled exception.
+
+    Returns:
+        A 500 JSON response.
+
     """
     corr_id = await get_corr_id(request)
 
@@ -128,11 +167,10 @@ app.include_router(api_router, prefix="/api")
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    """Description:
-        Basic health check endpoint to verify the service is running.
+    """Basic health check endpoint to verify the service is running.
 
     Returns:
-        dict[str, str]: A message containing the application name.
+        A mapping containing the application name.
 
     """
     return {"message": f"{settings.APP_NAME} is running"}

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.connectors.slack.services.channel_service import ChannelService
-from app.core.logging import CorrelationAdapter, get_logger
+from app.core.logging import get_logger
 from app.db.records import WorkspaceRecord
 from app.db.storage_service import StorageService
+from app.domains.messaging.slack.service import SlackMessagingService
 
 logger = get_logger("billing.service")
 
@@ -19,14 +19,13 @@ class BillingService:
 
     def __init__(self, corr_id: str, storage: StorageService | None = None):
         self.corr_id = corr_id
-        self.log = CorrelationAdapter(logger, corr_id)
         self.storage = storage or StorageService(corr_id=corr_id)
 
     async def check_trial_expiries(self) -> None:
         """Scans all workspaces for expired trials and downgrades them to free.
         Also sends a 'day 5' reminder to users.
         """
-        self.log.info("Starting scheduled trial expiry check")
+        logger.info("Starting scheduled trial expiry check")
 
         # 1. Handle Expiries (trial_ends_at < now)
         now = datetime.now(UTC)
@@ -46,7 +45,7 @@ class BillingService:
                     await self._send_trial_reminder(ws, days_left)
 
     async def _downgrade_expired_trial(self, workspace: WorkspaceRecord) -> None:
-        self.log.info(
+        logger.info(
             "Trial expired for workspace_id=%s. Downgrading to free.", workspace.id
         )
         await self.storage.upsert_workspace(
@@ -57,7 +56,7 @@ class BillingService:
     async def _send_trial_reminder(
         self, workspace: WorkspaceRecord, days_left: int
     ) -> None:
-        self.log.info(
+        logger.info(
             "Sending trial reminder to workspace_id=%s (%s days left)",
             workspace.id,
             days_left,
@@ -68,17 +67,17 @@ class BillingService:
 
         slack_integ = await self.storage.get_integration(workspace.id, Provider.SLACK)
         if not slack_integ:
-            self.log.warning(
+            logger.warning(
                 "No Slack integration found for workspace_id=%s, cannot send reminder",
                 workspace.id,
             )
             return
 
-        # Initialize ChannelService
+        # Initialize MessagingService
         from app.domains.crm.integration_service import IntegrationService
 
         integration_service = IntegrationService(self.corr_id, storage=self.storage)
-        channel_service = ChannelService(
+        messaging_service = SlackMessagingService(
             corr_id=self.corr_id,
             integration_service=integration_service,
             slack_integration=slack_integ,
@@ -94,12 +93,12 @@ class BillingService:
         channel = slack_integ.metadata.get("channel_id")
         if not channel:
             # Fallback to general lookup or specific discovery
-            self.log.warning(
+            logger.warning(
                 "No default channel set for reminder in workspace_id=%s", workspace.id
             )
             return
 
-        await channel_service.send_message(
+        await messaging_service.send_message(
             workspace_id=workspace.id, channel=channel, text=message
         )
-        self.log.info("Trial reminder sent successfully to channel=%s", channel)
+        logger.info("Trial reminder sent successfully to channel=%s", channel)

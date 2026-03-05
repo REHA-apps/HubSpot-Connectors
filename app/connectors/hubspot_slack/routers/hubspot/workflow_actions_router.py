@@ -7,11 +7,12 @@ from fastapi import APIRouter, Body, Depends
 from pydantic import BaseModel
 
 from app.core.dependencies import get_integration_service
-from app.core.logging import get_corr_id
+from app.core.logging import get_corr_id, get_logger
 from app.db.records import Provider
 from app.domains.crm.integration_service import IntegrationService
 from app.domains.messaging.slack.service import SlackMessagingService
 
+logger = get_logger("hubspot.workflow-actions")
 router = APIRouter(prefix="/integrations/hubspot", tags=["hubspot-workflow-actions"])
 
 
@@ -84,10 +85,31 @@ async def handle_workflow_action(
             target_id = resolved_id
 
     # Send message to Slack
-    await messaging_service.send_message(
+    resp = await messaging_service.send_message(
         workspace_id=workspace_id,
         channel=target_id,
         text=message_text,
     )
+
+    # If the message was sent successfully and we have object context from HubSpot,
+    # map the thread so users can reply natively in Slack.
+    if resp and resp.get("ts"):
+        obj_type = payload.object.get("objectType")
+        obj_id = payload.object.get("objectId")
+        if obj_type and obj_id:
+            logger.info(
+                "Storing thread mapping for workflow action obj=%s:%s",
+                obj_type,
+                obj_id,
+            )
+            await integration_service.storage.upsert_thread_mapping(
+                {
+                    "workspace_id": workspace_id,
+                    "object_type": obj_type.lower(),
+                    "object_id": str(obj_id),
+                    "channel_id": target_id,
+                    "thread_ts": str(resp.get("ts")),
+                }
+            )
 
     return {"status": "ok"}

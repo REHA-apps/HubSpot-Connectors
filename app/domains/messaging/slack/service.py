@@ -483,37 +483,50 @@ class SlackMessagingService(MessagingService):
             full_context = f"{parent_text} {str(blocks)}"
 
             # 2. Look up thread mapping
-            ticket_id = None
+            object_id = None
+            object_type = None
+
             mapping = await self.integration_service.storage.get_thread_mapping_by_ts(
                 workspace_id=workspace_id,
                 channel_id=channel,
                 thread_ts=thread_ts,
             )
 
-            if mapping and mapping.object_type == "ticket":
-                ticket_id = mapping.object_id
-                logger.info("Resolved ticket ID from thread mapping: %s", ticket_id)
+            supported_types = ("ticket", "contact", "deal", "company")
+            if mapping and mapping.object_type in supported_types:
+                object_id = mapping.object_id
+                object_type = mapping.object_type
+                logger.info(
+                    "Resolved object ID from thread mapping: %s:%s",
+                    object_type,
+                    object_id,
+                )
 
             # Heuristic Fallback
-            if not ticket_id:
+            if not object_id:
                 ticket_match = TICKET_PATTERN.search(full_context)
                 if not ticket_match:
                     ticket_match = TICKET_ID_PATTERN.search(full_context)
                 if ticket_match:
-                    ticket_id = ticket_match.group(1)
+                    object_id = ticket_match.group(1)
+                    object_type = "ticket"
 
             conversation_match = CONVERSATION_PATTERN.search(full_context)
 
-            if ticket_id:
-                # 3. Create Note for Ticket
+            if object_id and object_type:
+                # 3. Create Note for Object
                 note_content = f"Slack Reply from <@{user}>:\n{text}"
                 await self.crm.hubspot.create_note(
                     workspace_id=workspace_id,
                     content=note_content,
-                    associated_id=ticket_id,
-                    associated_type="ticket",
+                    associated_id=object_id,
+                    associated_type=object_type,
                 )
-                logger.info("Synced threaded reply to Ticket %s", ticket_id)
+                logger.info(
+                    "Synced threaded reply to %s %s",
+                    object_type.capitalize(),
+                    object_id,
+                )
 
             elif conversation_match:
                 thread_id = conversation_match.group(1)

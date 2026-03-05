@@ -80,16 +80,6 @@ class NotificationService:
                 )
                 return
 
-            # Also log clearly if no channel_id is set so the user knows what to do
-            if not slack_integ_check.metadata.get("channel_id"):
-                logger.warning(
-                    "No default Slack channel configured for workspace %s. "
-                    "Open the HubSpot Settings card and enter a channel ID to "
-                    "receive notifications.",
-                    workspace_id,
-                )
-                return
-
         # 2. Determine Object Type
         obj_type = self._map_subscription_to_type(sub_type, event)
         if not obj_type:

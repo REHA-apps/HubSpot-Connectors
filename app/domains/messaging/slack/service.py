@@ -451,6 +451,52 @@ class SlackMessagingService(MessagingService):
                 "Failed to handle Slack link_shared event: %s", exc, exc_info=True
             )
 
+    async def _resolve_thread_target(
+        self, workspace_id: str, channel: str, thread_ts: str, full_context: str
+    ) -> tuple[str | None, str | None, str | None]:
+        """Resolves the HubSpot object or conversation targets for a thread.
+
+        Returns: (object_id, object_type, thread_id)
+        """
+        # 1. Look up thread mapping
+        mapping = await self.integration_service.storage.get_thread_mapping_by_ts(
+            workspace_id=workspace_id,
+            channel_id=channel,
+            thread_ts=thread_ts,
+        )
+
+        supported_types = ("ticket", "contact", "deal", "company")
+        if mapping and mapping.object_type in supported_types:
+            return mapping.object_id, mapping.object_type, None
+
+        # 2. Heuristic fallback for objects
+        ticket_match = TICKET_PATTERN.search(full_context)
+        if not ticket_match:
+            ticket_match = TICKET_ID_PATTERN.search(full_context)
+
+        if ticket_match:
+            return ticket_match.group(1), "ticket", None
+
+        # 3. Heuristic fallback for conversations
+        conversation_match = CONVERSATION_PATTERN.search(full_context)
+        if conversation_match:
+            return None, None, conversation_match.group(1)
+
+        return None, None, None
+
+    async def _get_slack_user_name(self, client: Any, user: str) -> str:
+        """Resolves user's real name via Slack API, falls back to <@id>."""
+        try:
+            user_info_resp = await client.users_info(user=user)
+            if user_info_resp and user_info_resp.get("ok"):
+                user_info = dict(user_info_resp.get("user", {}))
+                return (
+                    user_info.get("real_name") or user_info.get("name") or f"<@{user}>"
+                )
+        except Exception as exc:
+            logger.warning("Failed to fetch Slack user info for %s: %s", user, exc)
+        return f"<@{user}>"
+
     async def handle_threaded_reply(
         self,
         *,
@@ -466,7 +512,7 @@ class SlackMessagingService(MessagingService):
             slack_channel = await self.get_slack_channel()
             client = slack_channel.get_slack_client()
 
-            # 1. Fetch parent message to establish context
+            # 1. Establish context
             resp = await client.conversations_replies(
                 channel=channel, ts=thread_ts, limit=1, inclusive=True
             )
@@ -478,159 +524,50 @@ class SlackMessagingService(MessagingService):
                 return
 
             parent = messages[0]
-            parent_text = parent.get("text", "")
-            blocks = parent.get("blocks", [])
-            full_context = f"{parent_text} {str(blocks)}"
+            full_context = f"{parent.get('text', '')} {str(parent.get('blocks', []))}"
 
-            # 2. Look up thread mapping
-            object_id = None
-            object_type = None
-
-            mapping = await self.integration_service.storage.get_thread_mapping_by_ts(
-                workspace_id=workspace_id,
-                channel_id=channel,
-                thread_ts=thread_ts,
+            # 2. Resolve target
+            (
+                object_id,
+                object_type,
+                conversation_thread_id,
+            ) = await self._resolve_thread_target(
+                workspace_id, channel, thread_ts, full_context
             )
 
-            supported_types = ("ticket", "contact", "deal", "company")
-            if mapping and mapping.object_type in supported_types:
-                object_id = mapping.object_id
-                object_type = mapping.object_type
-                logger.info(
-                    "Resolved object ID from thread mapping: %s:%s",
-                    object_type,
-                    object_id,
-                )
+            if not (object_id or conversation_thread_id):
+                return
 
-            # Heuristic Fallback
-            if not object_id:
-                ticket_match = TICKET_PATTERN.search(full_context)
-                if not ticket_match:
-                    ticket_match = TICKET_ID_PATTERN.search(full_context)
-                if ticket_match:
-                    object_id = ticket_match.group(1)
-                    object_type = "ticket"
+            # 3. Resolve user identity
+            user_name = await self._get_slack_user_name(client, user)
+            reply_log = f"Slack Reply from {user_name}:\n{text}"
 
-            conversation_match = CONVERSATION_PATTERN.search(full_context)
-
+            # 4. Sync to HubSpot
             if object_id and object_type:
-                # 3. Create Note for Object
-                note_content = f"Slack Reply from <@{user}>:\n{text}"
                 await self.crm.hubspot.create_note(
                     workspace_id=workspace_id,
-                    content=note_content,
+                    content=reply_log,
                     associated_id=object_id,
                     associated_type=object_type,
                 )
-                logger.info(
-                    "Synced threaded reply to %s %s",
-                    object_type.capitalize(),
-                    object_id,
-                )
-
-            elif conversation_match:
-                thread_id = conversation_match.group(1)
-                # 3. Send Message to Conversation
+                logger.info("Synced threaded reply to %s %s", object_type, object_id)
+            elif conversation_thread_id:
                 await self.crm.hubspot.send_thread_reply(
                     workspace_id=workspace_id,
-                    thread_id=thread_id,
-                    text=text,
+                    thread_id=conversation_thread_id,
+                    text=reply_log,
                 )
-                logger.info("Synced threaded reply to Conversation %s", thread_id)
-            else:
-                return
+                logger.info(
+                    "Synced threaded reply to Conversation %s", conversation_thread_id
+                )
 
-            # 4. React to the reply to confirm sync
+            # 5. Confirm sync with reaction
             await client.reactions_add(
                 channel=channel, name="notebook", timestamp=message_ts
             )
 
         except Exception as exc:
             logger.error("Failed to handle threaded reply: %s", exc, exc_info=True)
-
-    async def handle_reaction_logging(
-        self,
-        *,
-        workspace_id: str,
-        channel: str,
-        message_ts: str,
-        reaction: str,
-        user: str,
-    ) -> None:
-        """Handles a Slack reaction (📝) by logging the message content to HubSpot."""
-        try:
-            # 1. Tier Check
-            is_pro = await self.integration_service.is_pro_workspace(workspace_id)
-            if not is_pro:
-                logger.info(
-                    "Skipping reaction sync: Workspace %s is not PRO", workspace_id
-                )
-                return
-
-            slack_channel = await self.get_slack_channel()
-            client = slack_channel.get_slack_client()
-
-            # 2. Fetch the specific message
-            resp = await client.reactions_get(channel=channel, timestamp=message_ts)
-            msg_data = resp.get("message", {})
-            text = msg_data.get("text", "")
-            thread_ts = msg_data.get("thread_ts") or message_ts
-
-            if not text:
-                logger.warning("Empty message for reaction sync in channel=%s", channel)
-                return
-
-            # 3. Resolve HubSpot Record
-            mapping = await self.integration_service.storage.get_thread_mapping_by_ts(
-                workspace_id=workspace_id,
-                channel_id=channel,
-                thread_ts=thread_ts,
-            )
-
-            object_id = None
-            object_type = None
-
-            if mapping:
-                object_id = mapping.object_id
-                object_type = mapping.object_type
-            else:
-                full_context = text + str(msg_data.get("blocks", []))
-                ticket_match = TICKET_PATTERN.search(full_context)
-                if not ticket_match:
-                    ticket_match = TICKET_ID_PATTERN.search(full_context)
-
-                if ticket_match:
-                    object_id = ticket_match.group(1)
-                    object_type = "ticket"
-
-            if not object_id or not object_type:
-                logger.warning(
-                    "Could not resolve HubSpot record for reaction sync in "
-                    "channel=%s message_ts=%s",
-                    channel,
-                    message_ts,
-                )
-                return
-
-            # 4. Create Note in HubSpot
-            note_content = f"Logged from Slack by <@{user}> (📝 reaction):\n{text}"
-            await self.crm.hubspot.create_note(
-                workspace_id=workspace_id,
-                content=note_content,
-                associated_id=object_id,
-                associated_type=object_type,
-            )
-
-            # 5. Confirmation Reaction
-            await client.reactions_add(
-                channel=channel, name="notebook", timestamp=message_ts
-            )
-            logger.info(
-                "Synced message to HubSpot %s:%s via emoji", object_type, object_id
-            )
-
-        except Exception as exc:
-            logger.error("Failed to handle reaction logging: %s", exc, exc_info=True)
 
     async def handle_app_home_opened(self, user_id: str) -> None:
         """Publishes the static Home tab view when a user opens the App Home."""

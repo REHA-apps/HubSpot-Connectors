@@ -428,6 +428,14 @@ class StorageService:
             }
         )
 
+    async def delete_all_thread_mappings_for_workspace(self, workspace_id: str) -> int:
+        workspace_id = await self._resolve_internal_workspace_id(workspace_id)
+        logger.info(
+            "Deleting all thread mappings for workspace_id=%s",
+            workspace_id,
+        )
+        return await self.thread_mappings.delete({"workspace_id": workspace_id})
+
     async def store_stripe_event(self, event_id: str) -> bool:
         """Returns True if event is new.
         Returns False if event was already processed.

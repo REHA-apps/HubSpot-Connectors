@@ -233,45 +233,6 @@ async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
                     user=user,
                 )
 
-    # Handle reaction events for Emoji-based Logging (📝)
-    if event_type == "reaction_added":
-        reaction = event.get("reaction")
-        # Support note or writing_hand (memo) 📝
-        if reaction in ("note", "writing_hand"):
-            item = event.get("item", {})
-            channel = item.get("channel")
-            message_ts = item.get("ts")
-            user = event.get("user")
-
-            if not channel or not message_ts:
-                return {"ok": True}
-
-            logger.info(
-                "Processing reaction_added (%s) in channel=%s ts=%s",
-                reaction,
-                channel,
-                message_ts,
-            )
-
-            integration = await integration_service.get_integration_by_slack_team_id(
-                team_id
-            )
-            if integration:
-                messaging_service = SlackMessagingService(
-                    corr_id=corr_id,
-                    integration_service=integration_service,
-                    slack_integration=integration,
-                )
-
-                background_tasks.add_task(
-                    messaging_service.handle_reaction_logging,
-                    workspace_id=integration.workspace_id,
-                    channel=channel,
-                    message_ts=message_ts,
-                    reaction=reaction,
-                    user=user,
-                )
-
     # Handle app_home_opened event for the Home tab
     if event_type == "app_home_opened":
         user_id = event.get("user")
@@ -302,7 +263,6 @@ async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
         "app_uninstalled",
         "link_shared",
         "message",
-        "reaction_added",
         "app_home_opened",
     ):
         logger.info("Unhandled event type received: %s", event_type)

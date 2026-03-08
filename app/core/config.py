@@ -80,12 +80,7 @@ class Settings(BaseSettings):
             "crm.objects.leads.read "
             "crm.objects.leads.write "
             "crm.objects.owners.read "
-            "crm.schemas.companies.read "
-            "conversations.read "
-            "conversations.write "
-            "sales-email-read "
             "tickets "
-            "automation "
             "oauth"
         ),
         repr=False,
@@ -95,8 +90,9 @@ class Settings(BaseSettings):
     SLACK_SCOPES: str = Field(
         default=(
             "commands chat:write chat:write.public users:read users:read.email "
-            "app_mentions:read im:history channels:history groups:history "
-            "mpim:history links:read links:write channels:read groups:read"
+            "im:history channels:history groups:history "
+            "mpim:history links:read links:write channels:read groups:read "
+            "reactions:write"
         ),
         repr=False,
     )

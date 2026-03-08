@@ -4,7 +4,7 @@ _metadata:
 display_information:
   name: HubSpot CRM Connector
   description: Search HubSpot contacts, companies, and deals from Slack.
-  long_description: HubSpot CRM Connector allows you to seamlessly find and share HubSpot contacts, companies, and deals directly within Slack. Boost your team's productivity by accessing CRM data without switching apps. This integration provides powerful search capabilities, AI-driven insights, and easy collaboration for your sales and support teams, making it easier than ever to manage customer relationships efficiently.
+  long_description: "HubSpot CRM Connector allows you to seamlessly find and share HubSpot contacts, companies, and deals directly within Slack. Boost your team's productivity by accessing CRM data without switching apps. This integration provides powerful search capabilities, AI-driven insights, and easy collaboration for your sales and support teams, making it easier than ever to manage customer relationships efficiently. _Note: This app uses generative AI to provide summaries and insights. AI outputs may be inaccurate; please verify important information independently._"
   background_color: "#0052CC"
 settings:
   org_deploy_enabled: false
@@ -17,7 +17,6 @@ settings:
       - message.im
       - message.groups
       - message.mpim
-      - app_mention
       - link_shared
       - app_uninstalled
       - app_home_opened
@@ -88,7 +87,7 @@ features:
       description: Create a new Contact, Deal, Task, or Ticket
     - name: Create HubSpot Record
       type: message
-      callback_id: create_hubspot_record
+      callback_id: create_hubspot_record_message
       description: Create a new Contact, Deal, Task, or Ticket from this message
 oauth_config:
   scopes:
@@ -98,7 +97,6 @@ oauth_config:
       - chat:write.public
       - users:read
       - users:read.email
-      - app_mentions:read
       - im:history
       - channels:history
       - groups:history
@@ -107,5 +105,6 @@ oauth_config:
       - links:write
       - channels:read
       - groups:read
+      - reactions:write
   redirect_urls:
     - https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/oauth/callback

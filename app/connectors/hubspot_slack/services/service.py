@@ -2078,7 +2078,6 @@ class InteractionService:
 
             # 2. Fetch replies
             replies = await slack_channel.get_thread_replies(
-                bot_token=integration.credentials["slack_bot_token"],
                 channel_id=mapping.channel_id,
                 thread_ts=mapping.thread_ts,
             )

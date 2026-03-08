@@ -471,6 +471,9 @@ class IntegrationService:
         # Clear integrations first (tokens, metadata)
         await self.storage.delete_all_integrations_for_workspace(workspace_id)
 
+        # Clear associated data
+        await self.storage.delete_all_thread_mappings_for_workspace(workspace_id)
+
         # Finally remove the workspace record itself for a full reset
         await self.storage.delete_workspace(workspace_id)
 

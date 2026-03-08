@@ -182,6 +182,8 @@ class SlackChannel(BaseChannel):
             text=fallback_text,
             blocks=blocks,
             thread_ts=thread_ts,
+            unfurl_links=False,
+            unfurl_media=False,
             **kwargs,
         )
         return cast(dict[str, Any], resp.data) if resp and resp.data else None
@@ -410,6 +412,8 @@ class SlackChannel(BaseChannel):
         payload = {
             "text": text,
             "replace_original": replace_original,
+            "unfurl_links": False,
+            "unfurl_media": False,
         }
         if blocks:
             payload["blocks"] = blocks

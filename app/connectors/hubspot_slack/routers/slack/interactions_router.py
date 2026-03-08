@@ -173,7 +173,7 @@ async def _handle_shortcuts(
 ) -> Response | None:
     """Fast-path for shortcuts (e.g., Global Search / Create)."""
     callback_id = payload.get("callback_id")
-    if callback_id != CREATE_RECORD_CALLBACK_ID:
+    if callback_id not in (CREATE_RECORD_CALLBACK_ID, "create_hubspot_record_message"):
         return None
 
     trigger_id = payload.get("trigger_id")

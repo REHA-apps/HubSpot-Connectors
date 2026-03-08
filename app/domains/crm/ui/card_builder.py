@@ -42,7 +42,7 @@ class CardBuilder(
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": "🏠 Welcome to HubSpot CRM Connector",
+                    "text": "🏠 Welcome to REHA Connect",
                     "emoji": True,
                 },
             },

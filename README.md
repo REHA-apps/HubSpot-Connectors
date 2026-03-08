@@ -1,4 +1,4 @@
-# REHA Connectors 🚀
+# REHA Connect 🚀
 ### Modern HubSpot → Slack / WhatsApp / MS Teams Integration Framework
 Built with **FastAPI** · **Supabase** · **uv** · **Docker** · **Nginx**
 
@@ -6,11 +6,11 @@ Built with **FastAPI** · **Supabase** · **uv** · **Docker** · **Nginx**
 
 ## 🌟 Overview
 
-**REHA Connectors** is the powerhouse behind REHA Apps. It provides a modular, high-performance integration framework designed to bridge **HubSpot CRM** with modern communication platforms.
+**REHA Connect** is the powerhouse behind REHA Apps. It provides a modular, high-performance integration framework designed to bridge **HubSpot CRM** with modern communication platforms.
 
 Whether your team uses **Slack**, **WhatsApp**, or **Microsoft Teams**, this backend handles the smart routing, AI insights, and real-time syncing that keeps your business moving.
 
-### Why REHA Connectors?
+### Why REHA Connect?
 - **⚡ Lightning Fast**: Built with `async` Python for sub-second response times.
 - **🧩 Extensible**: Plug-and-play architecture for adding new channels in hours, not weeks.
 - **🛡️ Secure**: OAuth 2.0 flow with encrypted token persistence via Supabase.

@@ -245,7 +245,7 @@ class SlackMessagingService(MessagingService):
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        "👋 *Welcome to the HubSpot CRM Connector!* \n\n"
+                        "👋 *Welcome to REHA Connect!* \n\n"
                         "To start searching your CRM directly from Slack, "
                         "you need to connect your HubSpot account."
                     ),

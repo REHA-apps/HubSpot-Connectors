@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "crm-connectors"
+name = "reha-connect"
 version = "0.1.0"
-description = "HubSpot Connector Platform for Slack"
+description = "REHA Connect: HubSpot Connector Platform for Slack"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}

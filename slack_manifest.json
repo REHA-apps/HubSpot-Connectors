@@ -4,9 +4,9 @@
     "minor_version": 1
   },
   "display_information": {
-    "name": "HubSpot CRM Connector",
+    "name": "REHA Connect",
     "description": "Search HubSpot contacts, companies, and deals from Slack.",
-    "long_description": "HubSpot CRM Connector allows you to seamlessly find and share HubSpot contacts, companies, and deals directly within Slack. Boost your team's productivity by accessing CRM data without switching apps. This integration provides powerful search capabilities, AI-driven insights, and easy collaboration for your sales and support teams, making it easier than ever to manage customer relationships efficiently. _Note: This app uses generative AI to provide summaries and insights. AI outputs may be inaccurate; please verify important information independently._",
+    "long_description": "REHA Connect allows you to seamlessly find and share HubSpot contacts, companies, and deals directly within Slack. Boost your team's productivity by accessing CRM data without switching apps. This integration provides powerful search capabilities, AI-driven insights, and easy collaboration for your sales and support teams, making it easier than ever to manage customer relationships efficiently. _Note: This app uses generative AI to provide summaries and insights. AI outputs may be inaccurate; please verify important information independently._",
     "background_color": "#0052CC"
   },
   "settings": {
@@ -37,7 +37,7 @@
       "app-eu1.hubspot.com"
     ],
     "bot_user": {
-      "display_name": "REHA Bot",
+      "display_name": "REHA Connect",
       "always_online": true
     },
     "app_home": {

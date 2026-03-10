@@ -8,17 +8,17 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from app.core.config import settings
 from app.core.logging import CorrelationAdapter, get_logger
+from app.utils.helpers import HTTPClient
 
 logger = get_logger("slack.client")
 
 
 class SlackClient:
-    """Description:
-        Wrapper around Slack's AsyncWebClient that handles automatic token rotation.
+    """Wrapper around Slack's AsyncWebClient that handles automatic token rotation.
 
     Rules Applied:
         - Checks for token expiration before making requests.
-        - Refreshes tokens using the SlackPlatform if needed.
+        - Refreshes tokens using the Slack API if needed.
         - Notifies the service layer of token updates for persistence.
     """
 
@@ -35,11 +35,9 @@ class SlackClient:
         self.expires_at = expires_at
         self.log = CorrelationAdapter(logger, corr_id)
 
-        # Callback: (new_token, new_refresh, new_expires) -> None
+        # Callback: (new_token, new_refresh, new_expires) -> Awaitable[None]
         self.on_token_refresh: (
-            Callable[[str, str | None, int | None], Awaitable[None]]
-            | Callable[[str, str | None, int | None], None]
-            | None
+            Callable[[str, str | None, int | None], Awaitable[None]] | None
         ) = None
 
         self._client = AsyncWebClient(token=bot_token)
@@ -56,12 +54,6 @@ class SlackClient:
 
         self.log.info("Slack token expiring soon; attempting refresh")
 
-        # We need a channel instance to do the exchange
-        # Note: app.channels will eventually become app.connectors
-        from app.connectors.hubspot_slack.slack_channel import SlackChannel
-
-        platform = SlackChannel(corr_id=self.corr_id)
-
         # Slack uses the same v2.access for refresh, but with grant_type=refresh_token
         data = {
             "client_id": settings.SLACK_CLIENT_ID,
@@ -70,10 +62,9 @@ class SlackClient:
             "refresh_token": self.refresh_token,
         }
 
-        # Use platform's http client
-        resp = await platform.http_client.post(
-            "https://slack.com/api/oauth.v2.access", data=data
-        )
+        # Use internalized http client
+        http = HTTPClient.get_client(corr_id=self.corr_id)
+        resp = await http.post("https://slack.com/api/oauth.v2.access", data=data)
         resp.raise_for_status()
         payload = resp.json()
 
@@ -96,11 +87,9 @@ class SlackClient:
 
         # Notify
         if self.on_token_refresh:
-            res = self.on_token_refresh(
+            await self.on_token_refresh(
                 self.bot_token, self.refresh_token, self.expires_at
             )
-            if isinstance(res, Awaitable):
-                await res
 
     async def chat_postMessage(self, **kwargs) -> Any:
         await self._ensure_fresh_token()
@@ -119,8 +108,6 @@ class SlackClient:
 
     # Proxy other method as needed, or use a __getattr__ if appropriate
     def __getattr__(self, name: str) -> Any:
-        # For simplicity in this demo, we wrap common ones or return the client method
-        # Real implementation should probably ensure refresh before ANY call.
         attr = getattr(self._client, name)
         if callable(attr):
 

@@ -7,20 +7,17 @@ from unittest.mock import AsyncMock, MagicMock
 # Add the project root to sys.path
 sys.path.append(os.getcwd())
 
-from app.connectors.slack.ui import CardBuilder
 from app.db.records import PlanTier, WorkspaceRecord
 from app.domains.ai.service import AIContactAnalysis, AIDealAnalysis
 from app.domains.crm.integration_service import IntegrationService
+from app.domains.crm.ui.card_builder import CardBuilder
 
 
 async def test_trial_logic():
     print("Testing Trial Logic...")
-    from app.domains.crm.integration_service import _GLOBAL_TIER_CACHE
-
-    _GLOBAL_TIER_CACHE.clear()
-
     service = IntegrationService("test-corr-id")
     service.storage = MagicMock()
+    service._tier_cache.clear()
 
     # 1. Test PRO (within 7 days)
     recent_date = datetime.now(UTC) - timedelta(days=6)
@@ -36,7 +33,7 @@ async def test_trial_logic():
         assert tier_recent == PlanTier.PRO
 
     # 2. Test FREE (after 7 days)
-    _GLOBAL_TIER_CACHE.clear()
+    service._tier_cache.clear()
     old_date = datetime.now(UTC) - timedelta(days=8)
     workspace_old = WorkspaceRecord(
         id="ws-old", install_date=old_date, plan=PlanTier.FREE

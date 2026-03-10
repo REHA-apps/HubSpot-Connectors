@@ -99,6 +99,7 @@ class SlackMessagingService(MessagingService):
         analysis: Any = None,
         is_pro: bool = False,
         thread_ts: str | None = None,
+        pipelines: list[dict[str, Any]] | None = None,
         response_url: str | None = None,
     ) -> str | None:
         """Builds and dispatches a rich CRM object card with AI insights to Slack."""
@@ -108,7 +109,9 @@ class SlackMessagingService(MessagingService):
             analysis = await self.ai.analyze_polymorphic(obj, obj_type)
 
         # 2. Build Unified IR
-        unified_card = self.cards.build(obj, cast(Any, analysis), is_pro=is_pro)
+        unified_card = self.cards.build(
+            obj, cast(Any, analysis), is_pro=is_pro, pipelines=pipelines
+        )
 
         # 3. Render for Slack
         rendered = self.slack_renderer.render(unified_card)

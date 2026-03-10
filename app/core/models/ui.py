@@ -48,6 +48,8 @@ class ModalMetadata(BaseModel):
     object_type: str | None = None
     object_id: str | None = None
     deal_id: str | None = None
+    contact_id: str | None = None
+    object_group: str | None = None
     stage_id: str | None = None
     channel_id: str | None = None
     response_url: str | None = None

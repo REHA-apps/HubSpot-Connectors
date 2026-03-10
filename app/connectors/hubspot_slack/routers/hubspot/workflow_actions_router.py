@@ -35,19 +35,20 @@ async def handle_workflow_action(
     portal_id = str(payload.origin.get("portalId"))
 
     message_text = payload.fields.get("message_text")
+    workspace_id = payload.fields.get("workspace_id")
 
-    # portal_id (e.g. 147910822) is NOT the workspace_id.
-    # Resolve the real workspace_id via the HubSpot integration record.
-    hs_integration = await integration_service.storage.get_integration_by_portal_id(
-        portal_id
-    )
-    if not hs_integration:
-        return {
-            "status": "ok",
-            "message": f"No HubSpot integration found for portal_id={portal_id}",
-        }
-
-    workspace_id = hs_integration.workspace_id
+    if not workspace_id:
+        # portal_id (e.g. 147910822) is NOT the workspace_id.
+        # Resolve the real workspace_id via the HubSpot integration record.
+        hs_integration = await integration_service.storage.get_integration_by_portal_id(
+            portal_id
+        )
+        if not hs_integration:
+            return {
+                "status": "ok",
+                "message": f"No HubSpot integration found for portal_id={portal_id}",
+            }
+        workspace_id = hs_integration.workspace_id
 
     slack_integration = await integration_service.get_integration(
         workspace_id=workspace_id,

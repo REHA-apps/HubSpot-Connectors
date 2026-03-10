@@ -285,12 +285,25 @@ class IntegrationService:
         except Exception as e:
             logger.warning("Could not fetch HubSpot token info: %s", e)
 
-        # Slack-first install (only if state was not dropped)
+        # Global Deduplication: Check if this Portal ID is already integrated
+        existing_anywhere = await self.storage.get_integration_by_portal_id(
+            token.portal_id
+        )
+
+        # 1. Slack-first install (only if state was not dropped)
         slack_integration = None
         if state:
             slack_integration = await self.get_integration_by_slack_team_id(state)
 
-        if slack_integration:
+        if existing_anywhere:
+            # Re-use existing workspace if portal is already known
+            workspace_id = existing_anywhere.workspace_id
+            logger.info(
+                "Portal %s already linked to workspace=%s; re-using",
+                token.portal_id,
+                workspace_id,
+            )
+        elif slack_integration:
             workspace_id = slack_integration.workspace_id
             logger.info("Resolved workspace via Slack-first install")
             # Update primary_email on existing workspace if we have it
@@ -387,19 +400,24 @@ class IntegrationService:
                 workspace_id = workspace.id
                 logger.info("Created new workspace=%s", workspace_id)
 
-        # Save Slack integration
-        slack_payload: dict[str, Any] = {
+        # Merge metadata on re-install to preserve settings
+        metadata = {
+            "slack_team_id": team_id,
+            "slack_team_name": team_name,
+        }
+        if existing and existing.metadata:
+            metadata = {**dict(existing.metadata), **metadata}
+
+        # Update integration
+        slack_payload = {
             "workspace_id": workspace_id,
             "provider": Provider.SLACK,
             "credentials": {
-                "slack_bot_token": bot_token,
+                "access_token": bot_token,
                 "refresh_token": token.refresh_token,
                 "expires_at": token.expires_at,
             },
-            "metadata": {
-                "slack_team_id": team_id,
-                "slack_team_name": team_name,
-            },
+            "metadata": metadata,
         }
 
         # On re-install, include existing row ID so upsert merges instead of duplicating
@@ -509,34 +527,21 @@ class IntegrationService:
         )
 
         # Set callback for token rotation
-        def on_refresh(
+        async def on_refresh(
             access_token: str, refresh_token: str | None, expires_at: int | None
         ) -> None:
-            import asyncio
-
-            async def _persist_tokens():
-                try:
-                    await self.update_slack_tokens(
-                        workspace_id=integration.workspace_id,
-                        access_token=access_token,
-                        refresh_token=refresh_token,
-                        expires_at=expires_at,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "Failed to persist rotated Slack tokens for workspace=%s: %s",
-                        integration.workspace_id,
-                        exc,
-                    )
-
             try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(_persist_tokens())
-            except RuntimeError:
+                await self.update_slack_tokens(
+                    workspace_id=integration.workspace_id,
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    expires_at=expires_at,
+                )
+            except Exception as exc:
                 logger.error(
-                    "No running event loop — cannot persist "
-                    "rotated tokens for workspace=%s",
+                    "Failed to persist rotated Slack tokens for workspace=%s: %s",
                     integration.workspace_id,
+                    exc,
                 )
 
         client.on_token_refresh = on_refresh

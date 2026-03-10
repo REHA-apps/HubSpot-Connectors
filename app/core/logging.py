@@ -64,6 +64,16 @@ class ContextFilter(logging.Filter):
         return True
 
 
+class AccessLogFilter(logging.Filter):
+    """Description:
+    Filters out routine health check logs from access logs to reduce noise.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "/health" not in msg
+
+
 def get_logger(name: str) -> logging.Logger:
     """Description:
     Configures and retrieves a named logger with context-aware correlation ID support.
@@ -76,6 +86,11 @@ def get_logger(name: str) -> logging.Logger:
 
         handler = logging.StreamHandler(sys.stdout)
         handler.addFilter(ContextFilter())
+
+        # Apply AccessLogFilter specifically to web access logs
+        if name == "uvicorn.access":
+            handler.addFilter(AccessLogFilter())
+
         formatter = (
             JsonFormatter() if USE_JSON_LOGS else logging.Formatter(DEFAULT_FORMAT)
         )

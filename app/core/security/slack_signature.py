@@ -6,13 +6,22 @@ import hmac
 import time
 from collections.abc import Mapping
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException, Request
 
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import get_corr_id, get_logger
 from app.utils.constants import ErrorCode
 
 logger = get_logger("slack.security")
+
+
+async def slack_signature_required(
+    request: Request,
+    corr_id: str = Depends(get_corr_id),
+) -> None:
+    """FastAPI dependency to enforce Slack signature verification."""
+    body = await request.body()
+    await verify_slack_signature(request.headers, body, corr_id=corr_id)
 
 
 async def verify_slack_signature(

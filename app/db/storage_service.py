@@ -65,6 +65,9 @@ class StorageService:
             corr_id=corr_id,
         )
 
+        # Instance-level cache for portal_id -> internal_id resolution
+        self._id_resolution_cache: dict[str, str] = {}
+
     async def _resolve_internal_workspace_id(self, workspace_id: str) -> str:
         """Helper to resolve an internal workspace UUID from a numeric portal ID.
 
@@ -74,7 +77,11 @@ class StorageService:
         if not workspace_id.isdigit():
             return workspace_id
 
-        # Numeric ID detected; resolve to internal UUID
+        # 1. Check instance-level cache
+        if workspace_id in self._id_resolution_cache:
+            return self._id_resolution_cache[workspace_id]
+
+        # 2. Numeric ID detected; resolve to internal UUID
         integration = await self.get_integration_by_portal_id(portal_id=workspace_id)
         if not integration:
             logger.warning(
@@ -84,6 +91,8 @@ class StorageService:
                 workspace_id  # Fallback to original, error will likely occur downstream
             )
 
+        # 3. Cache the resolution
+        self._id_resolution_cache[workspace_id] = integration.workspace_id
         return integration.workspace_id
 
     # Workspace operations
@@ -232,9 +241,18 @@ class StorageService:
         logger.info("Fetching HubSpot integration portal_id=%s", portal_id)
 
         async def fetch_record_directly():
-            return await self.integrations.fetch_single(
+            # Check for multiple matches instead of just one for global health
+            matches = await self.integrations.fetch_many(
                 {"provider": Provider.HUBSPOT, "metadata->>portal_id": portal_id}
             )
+            if len(matches) > 1:
+                logger.warning(
+                    "INTEGRITY ALERT: Found %s workspaces for portal_id=%s. "
+                    "Using first.",
+                    len(matches),
+                    portal_id,
+                )
+            return matches[0] if matches else None
 
         workspace_id = await _hubspot_mapping_cache.get(portal_id)
 

@@ -98,8 +98,6 @@ async def slack_oauth_callback(
                 "Your cross-platform CRM integration is now active."
             ),
             workspace_id=workspace_id,
-            primary_color="#4a154b",  # Slack Purple
-            secondary_color="#ff5c35",  # HubSpot Orange
         )
 
     except HTTPException:

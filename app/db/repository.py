@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 from app.core.logging import get_logger
 from app.db.protocols import SupabaseModel, SupabaseRow
@@ -12,7 +12,7 @@ R = TypeVar("R", bound=SupabaseModel)
 logger = get_logger("supabase.repo")
 
 
-class SupabaseRepository(Generic[R]):
+class SupabaseRepository[R: SupabaseModel]:
     """Generic asynchronous repository for typed CRUD operations on Supabase tables.
 
     Attributes:

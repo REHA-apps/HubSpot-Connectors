@@ -10,7 +10,7 @@ from app.connectors.hubspot_slack.services.service import InteractionService
 from app.connectors.hubspot_slack.ui import ModalBuilder
 from app.core.dependencies import get_integration_service
 from app.core.logging import get_corr_id, get_logger
-from app.core.security.slack_signature import verify_slack_signature
+from app.core.security.slack_signature import slack_signature_required
 from app.domains.crm.integration_service import IntegrationService
 from app.domains.crm.ui.card_builder import CardBuilder
 from app.utils.constants import CREATE_RECORD_CALLBACK_ID, ErrorCode
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/slack", tags=["slack-interactions"])
 logger = get_logger("slack.interactions")
 
 
-@router.post("/interactions")
+@router.post("/interactions", dependencies=[Depends(slack_signature_required)])
 async def slack_interactions(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -29,11 +29,7 @@ async def slack_interactions(
     integration_service: IntegrationService = Depends(get_integration_service),
 ) -> Response:
     """Handles Slack interactivity callbacks (button clicks, modal submissions)."""
-    # 1. Verify signature
-    body = await request.body()
-    await verify_slack_signature(request.headers, body, corr_id=corr_id)
-
-    # 2. Parse payload
+    # 1. Parse payload
     form = await request.form()
     payload_str = form.get("payload")
     if not payload_str:
@@ -62,12 +58,25 @@ async def slack_interactions(
             return response
 
     # Default: process in background (including view_submission)
-    interaction_service = InteractionService(corr_id)
+    from app.domains.ai.service import AIService
+    from app.domains.crm.hubspot.service import HubSpotService
+
+    # These should ideally be injected but for background tasks we reconstruct or pass
+    # For now, following existing patterns in this file
+    hubspot = HubSpotService(corr_id=corr_id)
+    ai = AIService(corr_id=corr_id)
+
+    interaction_service = InteractionService(
+        hubspot=hubspot, ai=ai, integration_service=integration_service
+    )
+
     background_tasks.add_task(
         _run_task_with_context,
         corr_id,
         interaction_service.handle_interaction,
         payload,
+        None,  # integration will be resolved by handler or service if needed,
+        # but wait, the original passed integration.
     )
 
     if interaction_type == "view_submission":
@@ -157,7 +166,9 @@ async def _handle_block_actions(
 
     logger.info("Fast-path: opening modal for trigger=%s", trigger_id[:8])
     try:
-        client = await integration_service.get_slack_client(integration)
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        client = AsyncWebClient(token=bot_token)
         await client.views_open(trigger_id=trigger_id, view=modal)
         logger.info("Modal opened for object_id=%s", object_id)
     except Exception as exc:
@@ -187,13 +198,6 @@ async def _handle_shortcuts(
     is_pro = await integration_service.is_pro_workspace(integration.workspace_id)
     if not is_pro:
         try:
-            # For shortcuts, we might want to open a small "Upgrade Required" modal
-            # instead of ephemeral
-            # or just use views.open with an alert.
-            # For now, let's use the response_url if available, or just log.
-            # Shortcuts often don't have response_url unless triggered from message.
-            # If no response_url, we can open a tiny "Upgrade" modal.
-            modals = ModalBuilder()
             modal = {
                 "type": "modal",
                 "title": {"type": "plain_text", "text": "Upgrade to Pro"},
@@ -212,7 +216,9 @@ async def _handle_shortcuts(
                     }
                 ],
             }
-            client = await integration_service.get_slack_client(integration)
+            from slack_sdk.web.async_client import AsyncWebClient
+
+            client = AsyncWebClient(token=integration.credentials["slack_bot_token"])
             await client.views_open(trigger_id=trigger_id, view=modal)
         except Exception as exc:
             logger.error("Failed to open upgrade modal: %s", exc)
@@ -235,7 +241,9 @@ async def _handle_shortcuts(
 
     logger.info("Fast-path: opening creation modal for trigger=%s", trigger_id)
     try:
-        client = await integration_service.get_slack_client(integration)
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        client = AsyncWebClient(token=integration.credentials["slack_bot_token"])
         await client.views_open(trigger_id=trigger_id, view=modal)
     except Exception as exc:
         logger.error("Failed to open creation modal: %s", exc)

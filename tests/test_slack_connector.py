@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.slack.channel import SlackChannel as SlackConnector
+from app.connectors.hubspot_slack.slack_channel import SlackChannel as SlackConnector
 from app.core.models.channel import OutboundMessage
 
 

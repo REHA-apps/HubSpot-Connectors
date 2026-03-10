@@ -107,8 +107,10 @@ class NotificationService:
         # are never silently dropped, regardless of priority.
         is_creation = "creation" in sub_type
         if not is_creation and not self._should_notify(analysis, event):
-            logger.info(
-                "Skipping notification for %s %s (below threshold)", obj_type, object_id
+            logger.debug(
+                "Skipping notification for %s %s (logic: below relevant threshold)",
+                obj_type,
+                object_id,
             )
             return
 
@@ -179,6 +181,10 @@ class NotificationService:
 
         thread_ts = None
         mapping = None
+        pipelines = None
+
+        if obj_type == "deal":
+            pipelines = await self.hubspot.get_deal_pipelines(workspace_id)
 
         if is_pro and obj_type == "ticket":
             # 1. Resolve target channel
@@ -202,6 +208,7 @@ class NotificationService:
             analysis=analysis,
             is_pro=is_pro,
             thread_ts=thread_ts,
+            pipelines=pipelines,
         )
 
         # 7. Persist new thread mapping if this was the first message
@@ -279,10 +286,8 @@ class NotificationService:
         if event.get("propertyName") == "hs_pipeline_stage":
             return True
 
-        # 3. Deal stage changed to closed-won or closed-lost — always notify.
-        if event.get("propertyName") == "dealstage" and str(
-            event.get("propertyValue", "")
-        ).lower() in ("closedwon", "closedlost"):
+        # 3. Deal stage changed — always notify.
+        if event.get("propertyName") == "dealstage":
             return True
 
         # 4. Task status changed — always notify.

@@ -36,6 +36,7 @@ class MessagingService(ABC):
         analysis: Any = None,
         is_pro: bool = False,
         thread_ts: str | None = None,
+        pipelines: list[dict[str, Any]] | None = None,
     ) -> str | None:
         """Sends a rich CRM object card to the specified destination."""
         pass

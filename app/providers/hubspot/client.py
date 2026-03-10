@@ -391,12 +391,17 @@ class HubSpotClient(BaseClient):
         object_type: str,
         object_id: str,
         properties: list[str] | None = None,
+        associations: list[str] | None = None,
     ) -> dict[str, Any] | None:
-        """Generic object retrieval."""
+        """Generic object retrieval with optional properties and associations."""
         path = f"objects/{object_type}/{object_id}"
+        params: dict[str, Any] = {}
         if properties:
-            path += f"?properties={','.join(properties)}"
-        return await self.request("GET", path)
+            params["properties"] = ",".join(properties)
+        if associations:
+            params["associations"] = ",".join(associations)
+
+        return await self.request("GET", path, params=params)
 
     async def search_objects(
         self,

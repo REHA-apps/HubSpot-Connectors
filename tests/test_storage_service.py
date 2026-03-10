@@ -28,7 +28,7 @@ def _make_integration(
 def storage():
     """StorageService with mocked Supabase repos."""
     svc = StorageService.__new__(StorageService)
-    svc.log = MagicMock()
+
     svc.client = MagicMock()
     svc.integrations = MagicMock()
     svc.workspaces = MagicMock()

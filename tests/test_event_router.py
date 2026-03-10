@@ -21,7 +21,7 @@ async def test_route_contact_update(corr_id, integration_service, slack_integrat
     }
 
     with patch.object(
-        router.channel_service, "send_card", new=AsyncMock()
+        router.messaging_service, "send_card", new=AsyncMock()
     ) as mock_send:
         await router.route_contact_update(
             workspace_id="test_workspace",

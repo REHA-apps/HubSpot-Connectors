@@ -9,23 +9,15 @@ def render_success_page(
     title: str,
     message: str,
     workspace_id: str,
-    primary_color: str = "#ff5c35",  # HubSpot Orange as default
-    secondary_color: str = "#4a154b",  # Slack Purple
+    primary_color: str = "#0d9488",  # REHA Teal
+    secondary_color: str = "#4ade80",  # REHA Light Green
 ) -> HTMLResponse:
     """Description:
-        Renders a premium, branded success page for OAuth completion.
-
-    Args:
-        title (str): Page title and header.
-        message (str): Succinct success message.
-        workspace_id (str): Reference ID for the user.
-        primary_color (str): Primary accent color (HSL/Hex).
-        secondary_color (str): Secondary accent color.
-
-    Returns:
-        HTMLResponse: Styled HTML content.
-
+    Renders a premium, branded success page for OAuth completion.
     """
+    # Shorten ID for display
+    display_id = workspace_id[:8].upper()
+
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -55,9 +47,9 @@ def render_success_page(
                 font-family: 'Outfit', sans-serif;
                 background-color: var(--bg);
                 background-image:
-                    radial-gradient(circle at 20% 20%, rgba(255, 92, 53, 0.05) 0%,
+                    radial-gradient(circle at 20% 20%, rgba(13, 148, 136, 0.1) 0%,
                                     transparent 40%),
-                    radial-gradient(circle at 80% 80%, rgba(74, 21, 75, 0.05) 0%,
+                    radial-gradient(circle at 80% 80%, rgba(74, 222, 128, 0.1) 0%,
                                     transparent 40%);
                 color: var(--text);
                 height: 100vh;
@@ -95,16 +87,6 @@ def render_success_page(
                 align-items: center;
                 justify-content: center;
                 box-shadow: 0 10px 20px -5px var(--primary);
-                animation: pulse 2s infinite;
-            }}
-
-            @keyframes pulse {{
-                0% {{ transform: scale(1);
-                      box-shadow: 0 10px 20px -5px var(--primary); }}
-                50% {{ transform: scale(1.05);
-                       box-shadow: 0 15px 30px -5px var(--primary); }}
-                100% {{ transform: scale(1);
-                        box-shadow: 0 10px 20px -5px var(--primary); }}
             }}
 
             .check-icon {{
@@ -122,47 +104,71 @@ def render_success_page(
             p {{
                 color: var(--text-muted);
                 line-height: 1.6;
+                margin-bottom: 2.5rem;
+            }}
+
+            .reference-container {{
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px dashed rgba(255, 255, 255, 0.1);
+                padding: 1.5rem;
+                border-radius: 16px;
                 margin-bottom: 2rem;
             }}
 
-            .workspace-badge {{
-                display: inline-block;
-                padding: 0.5rem 1rem;
-                background: rgba(255, 255, 255, 0.05);
-                border-radius: 99px;
-                font-size: 0.875rem;
+            .label {{
+                display: block;
+                font-size: 0.75rem;
+                text-transform: uppercase;
+                letter-spacing: 0.1em;
                 color: var(--text-muted);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                margin-bottom: 0.5rem;
             }}
 
             .workspace-id {{
+                font-family: monospace;
+                font-size: 1.5rem;
                 color: var(--primary);
                 font-weight: 600;
+                letter-spacing: 0.2em;
             }}
 
-            .footer-links {{
-                margin-top: 3rem;
+            .btn-close {{
+                background: var(--primary);
+                color: white;
+                border: none;
+                padding: 0.75rem 2rem;
+                border-radius: 12px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s;
+            }}
+
+            .btn-close:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 10px 20px -5px var(--primary);
+            }}
+
+            .btn-copy {{
+                background: none;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                color: var(--text-muted);
+                padding: 0.5rem;
+                border-radius: 8px;
+                cursor: pointer;
+                transition: all 0.2s;
                 display: flex;
-                gap: 1.5rem;
+                align-items: center;
                 justify-content: center;
             }}
 
-            .footer-links a {{
-                color: var(--text-muted);
-                text-decoration: none;
-                font-size: 0.8125rem;
-                transition: color 0.2s;
+            .btn-copy:hover {{
+                background: rgba(255, 255, 255, 0.05);
+                color: var(--primary);
+                border-color: var(--primary);
             }}
 
-            .footer-links a:hover {{
-                color: var(--text);
-            }}
-
-            .confetti {{
-                position: absolute;
-                top: 0; left: 0; width: 100%; height: 100%;
+            .btn-copy svg {{
                 pointer-events: none;
-                z-index: -1;
             }}
         </style>
     </head>
@@ -174,24 +180,42 @@ def render_success_page(
             <h1>{escape(title)}</h1>
             <p>{escape(message)}</p>
 
-            <div class="workspace-badge">
-                Workspace ID: <span class="workspace-id">{escape(workspace_id)}</span>
+            <div class="reference-container">
+                <span class="label">Reference Code</span>
+                <div style="display: flex; align-items: center;
+                            justify-content: center; gap: 1rem;">
+                    <span class="workspace-id">{escape(display_id)}</span>
+                    <button class="btn-copy" title="Copy Full ID"
+                            onclick="copyToClipboard('{escape(workspace_id)}')">
+                        <svg width="20" height="20" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13"
+                                  height="13" rx="2" ry="2"></rect>
+                            <path
+d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1">
+                            </path>
+                        </svg>
+                    </button>
+                </div>
             </div>
-        </div>
 
-        <script>
-            // Simple micro-animation for the icon
-            document.querySelector('.icon-wrapper').addEventListener(
-                'mouseover', () => {{
-                document.querySelector('.icon-wrapper').style.transform =
-                    'rotate(5deg) scale(1.1)';
-            }});
-            document.querySelector('.icon-wrapper').addEventListener(
-                'mouseout', () => {{
-                document.querySelector('.icon-wrapper').style.transform =
-                    'rotate(0) scale(1)';
-            }});
-        </script>
+            <button class="btn-close" onclick="window.close()">Close Tab</button>
+
+            <script>
+                function copyToClipboard(fullId) {{
+                    navigator.clipboard.writeText(fullId).then(() => {{
+                        const btn = document.querySelector('.btn-copy');
+                        const originalHtml = btn.innerHTML;
+                        btn.innerHTML = '✓';
+                        btn.style.color = '#4ade80';
+                        setTimeout(() => {{
+                            btn.innerHTML = originalHtml;
+                            btn.style.color = 'inherit';
+                        }}, 2000);
+                    }});
+                }}
+            </script>
+        </div>
     </body>
     </html>
     """

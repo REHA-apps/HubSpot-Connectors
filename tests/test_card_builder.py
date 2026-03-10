@@ -3,9 +3,8 @@
 
 import pytest
 
-from app.connectors.hubspot.ui import HubSpotRenderer
-from app.connectors.slack.renderer import SlackRenderer
-from app.connectors.slack.ui import CardBuilder
+from app.connectors.hubspot_slack.hubspot_renderer import HubSpotRenderer
+from app.connectors.hubspot_slack.slack_renderer import SlackRenderer
 from app.core.models.ui import UnifiedCard
 from app.domains.ai.service import (
     AICompanyAnalysis,
@@ -14,6 +13,7 @@ from app.domains.ai.service import (
     AITaskAnalysis,
     AITicketAnalysis,
 )
+from app.domains.crm.ui.card_builder import CardBuilder
 
 
 @pytest.fixture
@@ -41,6 +41,8 @@ def deal_analysis():
         summary="Enterprise deal in negotiation.",
         risk="Open",
         next_action="Follow up with decision maker.",
+        score=75,
+        score_reason="High value deal.",
     )
 
 

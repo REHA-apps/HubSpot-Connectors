@@ -91,36 +91,17 @@ class SupabaseClient:
         for key, value in filters.items():
             query = query.eq(key, value)
 
-        try:
-            resp = await self._run(query.single().execute)
-        except Exception as e:
-            # Handle "0 rows" error from .single()
-            if hasattr(e, "code") and getattr(e, "code") == "PGRST116":
-                logger.info("No row found in %s for filters=%s", table, filters)
-                return None
+        # Use limit(1) instead of single() to handle unintentional duplicates gracefully
+        query = query.limit(1)
 
-            # For some versions, the error might be in the args or as a string
-            err_msg = str(e)
-            if "PGRST116" in err_msg or "0 rows" in err_msg:
-                logger.info(
-                    "No row found in %s for filters=%s (caught via msg)", table, filters
-                )
-                return None
+        resp = await self._run(query.execute)
+        data = resp.data
 
-            logger.error("SUPABASE ERROR: %s", e)
-            if e.args:
-                logger.error("SUPABASE RAW ERROR PAYLOAD: %s", e.args[0])
-            raise
-
-        raw = resp.data
-        logger.debug(
-            "Supabase fetch_single from %s: row_found=%s", table, raw is not None
-        )
-        if not isinstance(raw, dict):
-            logger.info("No row found for %s filters=%s", table, filters)
+        if not data or not isinstance(data, list) or len(data) == 0:
+            logger.debug("No row found in %s filters=%s", table, filters)
             return None
 
-        return raw
+        return cast(dict[str, Any], data[0])
 
     async def fetch_many(
         self,

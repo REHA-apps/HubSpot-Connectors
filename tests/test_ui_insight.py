@@ -1,10 +1,10 @@
 import asyncio
 
-from app.connectors.hubspot.ui import CardBuilder
 from app.db.storage_service import StorageService
 from app.domains.ai.service import AIService
 from app.domains.crm.hubspot.service import HubSpotService
 from app.domains.crm.integration_service import IntegrationService
+from app.domains.crm.ui.card_builder import CardBuilder
 
 
 async def main():
@@ -44,7 +44,7 @@ async def main():
         # 3. Build Unified IR
         is_pro = await integration.is_pro_workspace(portalId)
         builder = CardBuilder()
-        unified_card = builder.build(obj, analysis, is_pro=is_pro)
+        unified_card = builder.build(obj, analysis, is_pro=is_pro)  # type: ignore
 
         print(unified_card.model_dump())
     except Exception as e:

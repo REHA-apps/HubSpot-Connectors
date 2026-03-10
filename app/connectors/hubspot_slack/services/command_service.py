@@ -170,8 +170,8 @@ class CommandService:
                 response_url=response_url, text=success_text
             )
 
-        except Exception as exc:
-            logger.error("Task creation failed: %s", exc)
+        except Exception:
+            logger.exception("Task creation failed: %s")
             await self.messaging_service.send_via_response_url(
                 response_url=response_url, text="❌ Failed to create HubSpot task."
             )
@@ -236,8 +236,8 @@ class CommandService:
             await self.messaging_service.send_via_response_url(
                 response_url=response_url, text="HubSpot Reporting", blocks=blocks
             )
-        except Exception as exc:
-            logger.error("Report command failed: %s", exc)
+        except Exception:
+            logger.exception("Report command failed: %s")
             await self.messaging_service.send_via_response_url(
                 response_url=response_url, text="Failed to fetch reporting details."
             )

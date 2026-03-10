@@ -10,242 +10,185 @@ from slack_sdk.web.async_client import AsyncWebClient
 from app.connectors.hubspot_slack.ui.modal_builder import ModalBuilder
 from app.core.logging import get_logger
 from app.core.models.ui import ModalMetadata, UnifiedCard
+from app.db.records import IntegrationRecord
 from app.domains.messaging.slack.service import SlackMessagingService
 from app.utils.constants import CREATE_RECORD_CALLBACK_ID
 
-from .base import InteractionHandler
+from .base import (
+    InteractionContext,
+    InteractionHandler,
+    interaction_handler,
+    slack_error_handling,
+)
 
 logger = get_logger("modal_handlers")
 
 
 class ModalHandler(InteractionHandler):
-    async def handle(
+    @interaction_handler("add_note_modal")
+    async def _handle_add_note_submission(
         self,
+        *,
         payload: Mapping[str, Any],
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
         **kwargs: Any,
-    ) -> Any:
-        if payload.get("type") == "view_submission":
-            return await self._handle_view_submission(
-                payload, integration, messaging_service
-            )
-
-        action_id = kwargs.get("action_id", "")
-        trigger_id = kwargs.get("trigger_id", "")
-        value = kwargs.get("value", "")
-
-        if action_id == "open_add_note_modal":
-            return await self._handle_open_add_note_modal(
-                value=value,
-                trigger_id=trigger_id,
-                integration=integration,
-                messaging_service=messaging_service,
-            )
-        elif action_id == "open_update_lead_type_modal":
-            return await self._handle_open_update_lead_type_modal(
-                value=value,
-                trigger_id=trigger_id,
-                integration=integration,
-                messaging_service=messaging_service,
-            )
-        elif action_id == "open_ai_recap_modal":
-            return await self._handle_open_ai_recap_modal(
-                value=value,
-                trigger_id=trigger_id,
-                integration=integration,
-                messaging_service=messaging_service,
-            )
-        elif action_id == "reassign_owner":
-            return await self._handle_open_reassign_modal(
-                value=value,
-                trigger_id=trigger_id,
-                integration=integration,
-                messaging_service=messaging_service,
-            )
-        elif action_id == "open_calculator":
-            return await self._handle_open_calculator_modal(
-                value=value,
-                trigger_id=trigger_id,
-                integration=integration,
-                messaging_service=messaging_service,
-            )
-        elif action_id == "schedule_meeting":
-            return await self._handle_open_meeting_modal(
-                value=value,
-                trigger_id=trigger_id,
-                integration=integration,
-                messaging_service=messaging_service,
-            )
-
-    async def _handle_view_submission(
-        self,
-        payload: Mapping[str, Any],
-        integration: Any,
-        messaging_service: SlackMessagingService,
     ) -> None:
         view = payload.get("view", {})
-        callback_id = view.get("callback_id")
-        if callback_id and callback_id.startswith(f"{CREATE_RECORD_CALLBACK_ID}:"):
-            await self._handle_create_record_submission(
-                payload, integration, messaging_service
-            )
+        metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
+        object_type = metadata.object_type
+        object_id = metadata.object_id
+        channel_id = metadata.channel_id
+        response_url = metadata.response_url
+        if not object_type or not object_id:
+            logger.warning("Missing object context in metadata")
             return
-        if callback_id == "add_note_modal":
-            metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
-            object_type = metadata.object_type
-            object_id = metadata.object_id
-            channel_id = metadata.channel_id
-            response_url = metadata.response_url
-            if not object_type or not object_id:
-                logger.warning("Missing object context in metadata")
-                return
-            values = view.get("state", {}).get("values", {})
-            note_content = ""
-            for block_id, actions in values.items():
-                if "content" in actions:
-                    note_content = actions["content"].get("value", "")
-                    break
-            if not note_content:
-                logger.warning("Empty note content submitted")
-                return
-            await self.hubspot.create_note(
+        values = view.get("state", {}).get("values", {})
+        note_content = ""
+        for block_id, actions in values.items():
+            if "content" in actions:
+                note_content = actions["content"].get("value", "")
+                break
+        if not note_content:
+            logger.warning("Empty note content submitted")
+            return
+        await self.hubspot.create_note(
+            workspace_id=integration.workspace_id,
+            content=note_content,
+            associated_id=object_id,
+            associated_type=object_type,
+        )
+        try:
+            sender_name = str(payload.get("user", {}).get("name", "Slack User"))
+            await self.hubspot.publish_app_event(
                 workspace_id=integration.workspace_id,
-                content=note_content,
-                associated_id=object_id,
-                associated_type=object_type,
+                event_template_id="slack-message-sent",
+                object_type=object_type,
+                object_id=object_id,
+                properties={
+                    "message_body": note_content,
+                    "channel_name": f"<#{channel_id}>" if channel_id else "DM",
+                    "sender_name": sender_name,
+                },
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to publish custom timeline event "
+                "(expected if app not yet uploaded to portal): %s",
+                e,
+            )
+        user_id = context.user_id
+        msg = "✅ Note successfully logged to HubSpot!"
+        if response_url:
+            await messaging_service.send_via_response_url(
+                response_url=response_url, text=msg
+            )
+        elif channel_id and user_id:
+            client = AsyncWebClient(
+                token=integration.credentials.get("slack_bot_token")
             )
             try:
-                sender_name = str(payload.get("user", {}).get("name", "Slack User"))
-                await self.hubspot.publish_app_event(
-                    workspace_id=integration.workspace_id,
-                    event_template_id="slack-message-sent",
-                    object_type=object_type,
-                    object_id=object_id,
-                    properties={
-                        "message_body": note_content,
-                        "channel_name": f"<#{channel_id}>" if channel_id else "DM",
-                        "sender_name": sender_name,
-                    },
+                await client.chat_postEphemeral(
+                    channel=str(channel_id), user=user_id, text=msg
                 )
-            except Exception as e:
-                logger.warning(
-                    "Failed to publish custom timeline event "
-                    "(expected if app not yet uploaded to portal): %s",
-                    e,
-                )
-            user_id = str(payload.get("user", {}).get("id", ""))
-            msg = "✅ Note successfully logged to HubSpot!"
-            if response_url:
-                await messaging_service.send_via_response_url(
-                    response_url=response_url, text=msg
-                )
-            elif channel_id and user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
-                try:
-                    await client.chat_postEphemeral(
-                        channel=str(channel_id), user=user_id, text=msg
-                    )
-                except Exception:
-                    pass
+            except Exception:
+                pass
+        return
+
+    @interaction_handler("update_lead_type_modal")
+    async def _handle_update_lead_type_submission(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        integration: IntegrationRecord,
+        messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        **kwargs: Any,
+    ) -> None:
+        view = payload.get("view", {})
+        metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
+        deal_id = metadata.deal_id
+        channel_id = metadata.channel_id
+        response_url = metadata.response_url
+        values = view.get("state", {}).get("values", {})
+        lead_type = ""
+        for block in values.values():
+            if "lead_type_input" in block:
+                lead_type = block["lead_type_input"].get("value", "")
+                break
+        if not deal_id:
+            logger.warning("Missing deal_id in metadata for update_lead_type_modal")
             return
-        if callback_id == "schedule_meeting_modal":
-            await self._handle_schedule_meeting_submission(
-                payload, integration, messaging_service
+        async with slack_error_handling(
+            "update Lead Type",
+            payload,
+            messaging_service,
+            response_url=response_url,
+        ):
+            await self.hubspot.update_deal(
+                workspace_id=integration.workspace_id,
+                deal_id=deal_id,
+                properties={"hs_lead_type": lead_type},
             )
-            return
-        if callback_id == "update_lead_type_modal":
-            metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
-            deal_id = metadata.deal_id
-            channel_id = metadata.channel_id
-            response_url = metadata.response_url
-            values = view.get("state", {}).get("values", {})
-            lead_type = ""
-            for block in values.values():
-                if "lead_type_input" in block:
-                    lead_type = block["lead_type_input"].get("value", "")
-                    break
-            if not deal_id:
-                logger.warning("Missing deal_id in metadata for update_lead_type_modal")
-                return
-            try:
-                await self.hubspot.update_deal(
-                    workspace_id=integration.workspace_id,
-                    deal_id=deal_id,
-                    properties={"hs_lead_type": lead_type},
-                )
-            except Exception as exc:
-                if "PROPERTY_DOESNT_EXIST" in str(exc):
-                    msg = (
-                        "❌ Failed to update "
-                        "Lead Type: The property `hs_lead_type` "
-                        "does not exist for Deals in your HubSpot portal."
-                    )
-                else:
-                    msg = f"❌ Failed to update Lead Type: {str(exc)}"
-                user_id = str(payload.get("user", {}).get("id", ""))
-                if response_url:
-                    await messaging_service.send_via_response_url(
-                        response_url=response_url, text=msg
-                    )
-                elif channel_id and user_id:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
-                    )
-                    await client.chat_postEphemeral(
-                        channel=str(channel_id), user=user_id, text=msg
-                    )
-                return
-            user_id = str(payload.get("user", {}).get("id", ""))
+            user_id = context.user_id
             msg = "✅ Lead Type updated for deal!"
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url, text=msg
                 )
             elif channel_id and user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
+                client = await self.integration_service.get_slack_client(integration)
                 try:
                     await client.chat_postEphemeral(
                         channel=str(channel_id), user=user_id, text=msg
                     )
                 except Exception:
                     pass
+        return
+
+    @interaction_handler("post_mortem_submission")
+    async def _handle_post_mortem_submission(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        integration: IntegrationRecord,
+        messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        **kwargs: Any,
+    ) -> None:
+        view = payload.get("view", {})
+        metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
+        deal_id = metadata.deal_id
+        stage_id = metadata.stage_id
+        channel_id = metadata.channel_id
+        response_url = metadata.response_url
+        values = view.get("state", {}).get("values", {})
+        properties = {"dealstage": stage_id}
+        won_reason = ""
+        lost_reason = ""
+        for block in values.values():
+            if "closed_won_reason" in block:
+                won_reason = block["closed_won_reason"].get("value", "")
+            if "closed_lost_reason" in block:
+                lost_reason = (
+                    block["closed_lost_reason"]
+                    .get("selected_option", {})
+                    .get("value", "")
+                )
+        if won_reason:
+            properties["closed_won_reason"] = won_reason
+        if lost_reason:
+            properties["closed_lost_reason"] = lost_reason
+        if not deal_id:
+            logger.warning("Missing deal_id for post_mortem_submission")
             return
-        if callback_id == "ai_recap_submission_modal":
-            await self._handle_ai_recap_submission(
-                payload, integration, messaging_service
-            )
-            return
-        if callback_id == "post_mortem_submission":
-            metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
-            deal_id = metadata.deal_id
-            stage_id = metadata.stage_id
-            channel_id = metadata.channel_id
-            response_url = metadata.response_url
-            values = view.get("state", {}).get("values", {})
-            properties = {"dealstage": stage_id}
-            won_reason = ""
-            lost_reason = ""
-            for block in values.values():
-                if "closed_won_reason" in block:
-                    won_reason = block["closed_won_reason"].get("value", "")
-                if "closed_lost_reason" in block:
-                    lost_reason = (
-                        block["closed_lost_reason"]
-                        .get("selected_option", {})
-                        .get("value", "")
-                    )
-            if won_reason:
-                properties["closed_won_reason"] = won_reason
-            if lost_reason:
-                properties["closed_lost_reason"] = lost_reason
-            if not deal_id:
-                logger.warning("Missing deal_id for post_mortem_submission")
-                return
+        async with slack_error_handling(
+            "record post-mortem",
+            payload,
+            messaging_service,
+            response_url=response_url,
+        ):
             await self.hubspot.update_deal(
                 workspace_id=integration.workspace_id,
                 deal_id=deal_id,
@@ -265,166 +208,189 @@ class ModalHandler(InteractionHandler):
                     associated_id=deal_id,
                     associated_type="deal",
                 )
-            user_id = str(payload.get("user", {}).get("id", ""))
+            user_id = context.user_id
             msg = f"✅ Post-mortem recorded and deal stage updated to {stage_id}!"
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url, text=msg
                 )
             elif channel_id and user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
+                client = await self.integration_service.get_slack_client(integration)
                 try:
                     await client.chat_postEphemeral(
                         channel=str(channel_id), user=user_id, text=msg
                     )
                 except Exception:
                     pass
+        return
+
+    @interaction_handler("calculator_submission")
+    async def _handle_calculator_submission(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        integration: IntegrationRecord,
+        messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        **kwargs: Any,
+    ) -> None:
+        view = payload.get("view", {})
+        metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
+        deal_id = metadata.deal_id
+        channel_id = metadata.channel_id
+        response_url = metadata.response_url
+        values = view.get("state", {}).get("values", {})
+        qty = 1.0
+        price = 0.0
+        disc = 0.0
+        for block in values.values():
+            if "quantity" in block:
+                qty = float(block["quantity"].get("value", "1") or "1")
+            if "unit_price" in block:
+                price = float(block["unit_price"].get("value", "0") or "0")
+            if "discount_percent" in block:
+                disc = float(block["discount_percent"].get("value", "0") or "0")
+        total = qty * price * (1 - disc / 100)
+        if not deal_id:
+            logger.warning("Missing deal_id in metadata for calculator_submission")
             return
-        if callback_id == "calculator_submission":
-            metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
-            deal_id = metadata.deal_id
-            channel_id = metadata.channel_id
-            response_url = metadata.response_url
-            values = view.get("state", {}).get("values", {})
-            qty = 1.0
-            price = 0.0
-            disc = 0.0
-            for block in values.values():
-                if "quantity" in block:
-                    qty = float(block["quantity"].get("value", "1") or "1")
-                if "unit_price" in block:
-                    price = float(block["unit_price"].get("value", "0") or "0")
-                if "discount_percent" in block:
-                    disc = float(block["discount_percent"].get("value", "0") or "0")
-            total = qty * price * (1 - disc / 100)
-            if not deal_id:
-                logger.warning("Missing deal_id in metadata for calculator_submission")
-                return
+        async with slack_error_handling(
+            "calculate deal amount",
+            payload,
+            messaging_service,
+            response_url=response_url,
+        ):
             await self.hubspot.update_deal(
                 workspace_id=integration.workspace_id,
                 deal_id=deal_id,
                 properties={"amount": str(total)},
             )
-            user_id = str(payload.get("user", {}).get("id", ""))
+            user_id = context.user_id
             msg = f"✅ Calculated total `${total:,.2f}` saved to deal amount!"
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url, text=msg
                 )
             elif channel_id and user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
+                client = await self.integration_service.get_slack_client(integration)
                 try:
                     await client.chat_postEphemeral(
                         channel=str(channel_id), user=user_id, text=msg
                     )
                 except Exception:
                     pass
+        return
+
+    @interaction_handler("next_step_enforcement_submission")
+    async def _handle_next_step_enforcement_submission(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        integration: IntegrationRecord,
+        messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        **kwargs: Any,
+    ) -> None:
+        view = payload.get("view", {})
+        metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
+        deal_id = metadata.deal_id
+        stage_id = metadata.stage_id
+        channel_id = metadata.channel_id
+        response_url = metadata.response_url
+        values = view.get("state", {}).get("values", {})
+        next_step = ""
+        for block in values.values():
+            if "next_step" in block:
+                next_step = block["next_step"].get("value", "")
+                break
+        if not deal_id:
+            logger.warning("Missing deal_id in metadata for next_step_enforcement")
             return
-        if callback_id == "next_step_enforcement_submission":
-            metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
-            deal_id = metadata.deal_id
-            stage_id = metadata.stage_id
-            channel_id = metadata.channel_id
-            response_url = metadata.response_url
-            values = view.get("state", {}).get("values", {})
-            next_step = ""
-            for block in values.values():
-                if "next_step" in block:
-                    next_step = block["next_step"].get("value", "")
-                    break
-            if not deal_id:
-                logger.warning("Missing deal_id in metadata for next_step_enforcement")
-                return
+        async with slack_error_handling(
+            "enforce next step",
+            payload,
+            messaging_service,
+            response_url=response_url,
+        ):
             try:
                 await self.hubspot.update_deal(
                     workspace_id=integration.workspace_id,
                     deal_id=deal_id,
                     properties={"dealstage": stage_id, "hs_next_step": next_step},
                 )
+                msg = f"✅ Next step set and deal stage updated to {stage_id}!"
             except Exception as exc:
                 if "PROPERTY_DOESNT_EXIST" in str(exc) or "VALIDATION_ERROR" in str(
                     exc
                 ):
                     logger.warning(
-                        "Property hs_next_step failed, "
-                        "falling back to dealstage only update"
+                        "Property hs_next_step failed, falling back to dealstage only"
                     )
-                    try:
-                        await self.hubspot.update_deal(
-                            workspace_id=integration.workspace_id,
-                            deal_id=deal_id,
-                            properties={"dealstage": stage_id},
-                        )
-                        msg = (
-                            f"✅ Deal stage "
-                            f"Updated to {stage_id}, but Next Step property "
-                            f"could not be updated (property missing in HubSpot)."
-                        )
-                    except Exception as fallback_exc:
-                        msg = f"❌ Failed to update deal: {str(fallback_exc)}"
+                    await self.hubspot.update_deal(
+                        workspace_id=integration.workspace_id,
+                        deal_id=deal_id,
+                        properties={"dealstage": stage_id},
+                    )
+                    msg = (
+                        f"✅ Deal stage updated to {stage_id}, "
+                        "but Next Step property is missing in HubSpot."
+                    )
                 else:
-                    msg = f"❌ Failed to update deal: {str(exc)}"
-                user_id = str(payload.get("user", {}).get("id", ""))
-                if response_url:
-                    await messaging_service.send_via_response_url(
-                        response_url=response_url, text=msg
-                    )
-                elif channel_id and user_id:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
-                    )
-                    await client.chat_postEphemeral(
-                        channel=str(channel_id), user=user_id, text=msg
-                    )
-                return
-            user_id = str(payload.get("user", {}).get("id", ""))
-            msg = f"✅ Next step set and deal stage updated to {stage_id}!"
+                    raise exc
+
+            user_id = context.user_id
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url, text=msg
                 )
             elif channel_id and user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
+                client = await self.integration_service.get_slack_client(integration)
                 try:
                     await client.chat_postEphemeral(
                         channel=str(channel_id), user=user_id, text=msg
                     )
                 except Exception:
                     pass
-            return
-        if callback_id == "reassign_owner_submission":
-            metadata = view.get("private_metadata", "")
-            try:
-                meta = json.loads(metadata)
-                object_type = meta.get("object_type")
-                object_id = meta.get("object_id")
-                channel_id = meta.get("channel_id")
-                response_url = meta.get("response_url")
-            except Exception:
-                PARTS_MIN_LEN = 2
-                parts = str(metadata).split(":")
-                if len(parts) >= PARTS_MIN_LEN:
-                    object_type, object_id = (parts[0], parts[1])
-                else:
-                    object_type, object_id = ("deal", parts[0])
-                channel_id = None
-                response_url = None
-            values = view.get("state", {}).get("values", {})
-            new_owner_id = ""
-            for block in values.values():
-                if "hubspot_owner_id" in block:
-                    new_owner_id = (
-                        block["hubspot_owner_id"]
-                        .get("selected_option", {})
-                        .get("value")
-                    )
-                    break
+        return
+
+    @interaction_handler("reassign_owner_submission")
+    async def _handle_reassign_owner_submission(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        integration: IntegrationRecord,
+        messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        **kwargs: Any,
+    ) -> None:
+        view = payload.get("view", {})
+        metadata = view.get("private_metadata", "")
+        try:
+            meta = json.loads(metadata)
+            object_type = meta.get("object_type")
+            object_id = meta.get("object_id")
+            channel_id = meta.get("channel_id")
+            response_url = meta.get("response_url")
+        except Exception:
+            PARTS_MIN_LEN = 2
+            parts = str(metadata).split(":")
+            if len(parts) >= PARTS_MIN_LEN:
+                object_type, object_id = (parts[0], parts[1])
+            else:
+                object_type, object_id = ("deal", parts[0])
+            channel_id = None
+            response_url = None
+        values = view.get("state", {}).get("values", {})
+        new_owner_id = ""
+        for block in values.values():
+            if "hubspot_owner_id" in block:
+                new_owner_id = (
+                    block["hubspot_owner_id"].get("selected_option", {}).get("value")
+                )
+                break
+        async with slack_error_handling(
+            "reassign owner", payload, messaging_service, response_url=response_url
+        ):
             if object_type == "contact":
                 await self.hubspot.update_contact(
                     workspace_id=integration.workspace_id,
@@ -437,29 +403,30 @@ class ModalHandler(InteractionHandler):
                     deal_id=object_id,
                     properties={"hubspot_owner_id": new_owner_id},
                 )
-            user_id = str(payload.get("user", {}).get("id", ""))
+            user_id = context.user_id
             msg = "✅ Owner successfully reassigned!"
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url, text=msg
                 )
             elif channel_id and user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
+                client = await self.integration_service.get_slack_client(integration)
                 try:
                     await client.chat_postEphemeral(
                         channel=str(channel_id), user=user_id, text=msg
                     )
                 except Exception:
                     pass
-            return
 
+    @interaction_handler(CREATE_RECORD_CALLBACK_ID)
     async def _handle_create_record_submission(
         self,
+        *,
         payload: Mapping[str, Any],
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        **kwargs: Any,
     ) -> None:
         """Process the generic record creation modal submission."""
         view = payload.get("view", {})
@@ -497,7 +464,8 @@ class ModalHandler(InteractionHandler):
                 messaging_service=messaging_service,
                 response_url=view.get("private_metadata"),
                 channel_id=None,
-                user_id=str(payload.get("user", {}).get("id", "")),
+                user_id=context.user_id,
+                context=context,
             )
             return
         if object_type == "ticket":
@@ -506,7 +474,8 @@ class ModalHandler(InteractionHandler):
                 properties=properties,
                 association=association,
                 messaging_service=messaging_service,
-                user_id=str(payload.get("user", {}).get("id", "")),
+                user_id=context.user_id,
+                context=context,
             )
             return
         hubspot_client = await self.hubspot.get_client(integration.workspace_id)
@@ -523,7 +492,7 @@ class ModalHandler(InteractionHandler):
                     response_url = meta.get("response_url")
                 except Exception:
                     pass
-            user_id = str(payload.get("user", {}).get("id", ""))
+            user_id = context.user_id
             msg = f"✅ Successfully created {object_type.capitalize()}!"
             if response_url:
                 await messaging_service.send_via_response_url(
@@ -542,8 +511,8 @@ class ModalHandler(InteractionHandler):
                 )
                 await client.chat_postMessage(channel=user_id, text=msg)
         except Exception as exc:
-            logger.error("Failed to create object: %s", exc)
-            user_id = str(payload.get("user", {}).get("id", ""))
+            logger.exception("Failed to create object: %s")
+            user_id = context.user_id
             if user_id:
                 client = AsyncWebClient(
                     token=integration.credentials.get("slack_bot_token")
@@ -584,11 +553,13 @@ class ModalHandler(InteractionHandler):
             return ModalMetadata(deal_id=parts[0], stage_id=parts[1])
         return ModalMetadata(deal_id=metadata)
 
+    @interaction_handler("open_add_note_modal")
     async def _handle_open_add_note_modal(
         self,
         value: str,
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
         trigger_id: str | None,
         **kwargs: Any,
     ) -> None:
@@ -608,8 +579,8 @@ class ModalHandler(InteractionHandler):
                 "note_logging", trigger_id, integration, messaging_service
             )
         try:
-            channel_id = kwargs.get("channel_id")
-            response_url = kwargs.get("response_url")
+            channel_id = context.channel_id
+            response_url = context.response_url
             metadata = json.dumps(
                 {
                     "object_type": obj_type,
@@ -629,8 +600,8 @@ class ModalHandler(InteractionHandler):
             )
             logger.info("Opened add_note modal for object_id=%s", object_id)
         except Exception as exc:
-            logger.error("Failed to open add note modal: %s", exc)
-            response_url = kwargs.get("response_url")
+            logger.exception("Failed to open add note modal: %s")
+            response_url = context.response_url
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url,
@@ -643,7 +614,7 @@ class ModalHandler(InteractionHandler):
                         token=integration.credentials.get("slack_bot_token")
                     )
                     error_msg = f"❌ Failed to open note modal: {str(exc)}"
-                    channel_id = kwargs.get("channel_id")
+                    channel_id = context.channel_id
                     if channel_id:
                         await client.chat_postEphemeral(
                             channel=str(channel_id), user=user_id, text=error_msg
@@ -656,11 +627,13 @@ class ModalHandler(InteractionHandler):
                         except Exception:
                             pass
 
+    @interaction_handler("open_update_lead_type_modal")
     async def _handle_open_update_lead_type_modal(
         self,
         value: str,
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
         trigger_id: str | None,
         **kwargs: Any,
     ) -> None:
@@ -690,14 +663,16 @@ class ModalHandler(InteractionHandler):
                 await self._open_modal(
                     trigger_id, modal, "Update Lead Type", integration
                 )
-        except Exception as exc:
-            logger.error("Failed to open lead type modal: %s", exc)
+        except Exception:
+            logger.exception("Failed to open lead type modal: %s")
 
+    @interaction_handler("reassign_owner")
     async def _handle_open_reassign_modal(
         self,
         value: str,
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
         trigger_id: str | None,
         **kwargs: Any,
     ) -> None:
@@ -720,8 +695,8 @@ class ModalHandler(InteractionHandler):
         try:
             hubspot_client = await self.hubspot.get_client(integration.workspace_id)
             owners = await hubspot_client.get_owners()
-            channel_id = kwargs.get("channel_id")
-            response_url = kwargs.get("response_url")
+            channel_id = context.channel_id
+            response_url = context.response_url
             metadata = json.dumps(
                 {
                     "object_type": obj_type,
@@ -738,19 +713,21 @@ class ModalHandler(InteractionHandler):
             else:
                 await self._open_modal(trigger_id, modal, "Reassign Owner", integration)
         except Exception as exc:
-            logger.error("Failed to open reassign modal: %s", exc)
-            response_url = kwargs.get("response_url")
+            logger.exception("Failed to open reassign modal: %s")
+            response_url = context.response_url
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url,
                     text=f"❌ Failed to open reassign modal: {str(exc)}",
                 )
 
+    @interaction_handler("open_calculator")
     async def _handle_open_calculator_modal(
         self,
         value: str,
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
         trigger_id: str | None,
         **kwargs: Any,
     ) -> None:
@@ -780,8 +757,8 @@ class ModalHandler(InteractionHandler):
             props = deal.get("properties") or {}
             amount_str = props.get("amount", "0")
             amount = float(amount_str) if amount_str else 0.0
-            channel_id = kwargs.get("channel_id")
-            response_url = kwargs.get("response_url")
+            channel_id = context.channel_id
+            response_url = context.response_url
             metadata = json.dumps(
                 {
                     "deal_id": deal_id,
@@ -799,19 +776,21 @@ class ModalHandler(InteractionHandler):
                     trigger_id, modal, "Deal Calculator", integration
                 )
         except Exception as exc:
-            logger.error("Failed to open calculator modal: %s", exc)
-            response_url = kwargs.get("response_url")
+            logger.exception("Failed to open calculator modal: %s")
+            response_url = context.response_url
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url,
                     text=f"❌ Failed to open calculator modal: {str(exc)}",
                 )
 
+    @interaction_handler("schedule_meeting")
     async def _handle_open_meeting_modal(
         self,
         value: str,
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
         trigger_id: str | None,
         **kwargs: Any,
     ) -> None:
@@ -830,8 +809,8 @@ class ModalHandler(InteractionHandler):
             )
         view_id = await self._show_loading(trigger_id, "Loading...", integration)
         try:
-            channel_id = kwargs.get("channel_id")
-            response_url = kwargs.get("response_url")
+            channel_id = context.channel_id
+            response_url = context.response_url
             metadata = json.dumps(
                 {
                     "contact_id": contact_id,
@@ -851,19 +830,21 @@ class ModalHandler(InteractionHandler):
                     trigger_id, modal, "Schedule Meeting", integration
                 )
         except Exception as exc:
-            logger.error("Failed to open meeting modal: %s", exc)
-            response_url = kwargs.get("response_url")
+            logger.exception("Failed to open meeting modal: %s")
+            response_url = context.response_url
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url,
                     text=f"❌ Failed to open meeting modal: {str(exc)}",
                 )
 
+    @interaction_handler("open_ai_recap_modal")
     async def _handle_open_ai_recap_modal(
         self,
         value: str,
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
         trigger_id: str | None,
         **kwargs: Any,
     ) -> None:
@@ -892,7 +873,7 @@ class ModalHandler(InteractionHandler):
                 {"workspace_id": workspace_id, "object_id": obj_id}
             )
             if not mapping:
-                response_url = kwargs.get("response_url")
+                response_url = context.response_url
                 if response_url:
                     await messaging_service.send_via_response_url(
                         response_url=response_url,
@@ -916,8 +897,8 @@ class ModalHandler(InteractionHandler):
             summary = AIThreadSummary(
                 summary=analysis.summary, key_points=[], sentiment=analysis.status
             )
-            channel_id = kwargs.get("channel_id")
-            response_url = kwargs.get("response_url")
+            channel_id = context.channel_id
+            response_url = context.response_url
             metadata = json.dumps(
                 {
                     "object_type": obj_type,
@@ -938,8 +919,8 @@ class ModalHandler(InteractionHandler):
                     view=modal,
                 )
         except Exception as exc:
-            logger.error("Failed to open AI Recap modal: %s", exc)
-            response_url = kwargs.get("response_url")
+            logger.exception("Failed to open AI Recap modal: %s")
+            response_url = context.response_url
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url,
@@ -951,7 +932,7 @@ class ModalHandler(InteractionHandler):
         trigger_id: str | None,
         view_or_card: dict[str, Any] | UnifiedCard,
         title: str,
-        integration: Any,
+        integration: IntegrationRecord,
     ) -> str | None:
         """Helper to render a UnifiedCard or use a raw View and open it as a
         Slack modal.
@@ -992,11 +973,15 @@ class ModalHandler(InteractionHandler):
             logger.error("Failed to open modal '%s': %s", title, exc, exc_info=True)
             return None
 
+    @interaction_handler("ai_recap_submission_modal")
     async def _handle_ai_recap_submission(
         self,
+        *,
         payload: Mapping[str, Any],
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        **kwargs: Any,
     ) -> None:
         """Save the AI summary to HubSpot as a note."""
         view = payload.get("view", {})
@@ -1033,7 +1018,7 @@ class ModalHandler(InteractionHandler):
                 associated_type=obj_type,
             )
             logger.info("AI Recap saved as note for %s %s", obj_type, obj_id)
-            user_id = str(payload.get("user", {}).get("id", ""))
+            user_id = context.user_id
             msg = f"✅ AI Recap saved to HubSpot as a note for {obj_type} {obj_id}!"
             if response_url:
                 await messaging_service.send_via_response_url(
@@ -1050,8 +1035,8 @@ class ModalHandler(InteractionHandler):
                 except Exception:
                     pass
         except Exception as exc:
-            logger.error("Failed to save AI Recap: %s", exc)
-            user_id = str(payload.get("user", {}).get("id", ""))
+            logger.exception("Failed to save AI Recap: %s")
+            user_id = context.user_id
             if user_id:
                 error_msg = f"❌ Failed to save AI Recap: {str(exc)}"
                 if response_url:
@@ -1069,11 +1054,15 @@ class ModalHandler(InteractionHandler):
                     except Exception:
                         pass
 
+    @interaction_handler("schedule_meeting_modal")
     async def _handle_schedule_meeting_submission(
         self,
+        *,
         payload: Mapping[str, Any],
-        integration: Any,
+        integration: IntegrationRecord,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        **kwargs: Any,
     ) -> None:
         """Process the schedule meeting modal submission."""
         view = payload.get("view", {})
@@ -1109,8 +1098,8 @@ class ModalHandler(InteractionHandler):
         try:
             dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
             int(dt.timestamp() * 1000)
-        except Exception as exc:
-            logger.error("Failed to parse meeting date/time: %s", exc)
+        except Exception:
+            logger.exception("Failed to parse meeting date/time: %s")
             return
         from datetime import datetime, timedelta
 
@@ -1131,7 +1120,7 @@ class ModalHandler(InteractionHandler):
             )
             meeting_id = result.get("id", "unknown")
             logger.info("Meeting successfully created meeting_id=%s", meeting_id)
-            user_id = str(payload.get("user", {}).get("id", ""))
+            user_id = context.user_id
             if user_id:
                 msg = f"✅ *Meeting Scheduled!* \n_{title}_ at `{date_str} {time_str}`"
                 if response_url:
@@ -1154,8 +1143,8 @@ class ModalHandler(InteractionHandler):
                     except Exception:
                         pass
         except Exception as exc:
-            logger.error("Failed to create meeting: %s", exc)
-            user_id = str(payload.get("user", {}).get("id", ""))
+            logger.exception("Failed to create meeting: %s")
+            user_id = context.user_id
             if user_id:
                 error_msg = f"❌ Failed to schedule meeting: {str(exc)}"
                 if response_url:
@@ -1180,10 +1169,11 @@ class ModalHandler(InteractionHandler):
 
     async def _handle_task_submission(
         self,
-        integration: Any,
+        integration: IntegrationRecord,
         properties: dict[str, Any],
         association: str | None,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
         response_url: str | None,
         channel_id: str | None,
         user_id: str | None,
@@ -1217,10 +1207,11 @@ class ModalHandler(InteractionHandler):
 
     async def _handle_ticket_submission(
         self,
-        integration: Any,
+        integration: IntegrationRecord,
         properties: dict[str, Any],
         association: str | None,
         messaging_service: SlackMessagingService,
+        context: InteractionContext,
         user_id: str,
     ) -> None:
         """Handles complex ticket creation, channel
@@ -1280,7 +1271,7 @@ class ModalHandler(InteractionHandler):
             )
             await slack_client.chat_postMessage(channel=user_id, text=success_msg)
         except Exception as exc:
-            logger.error("Ticket submission failed: %s", exc, exc_info=True)
+            logger.exception("Ticket submission failed: %s")
             if user_id:
                 try:
                     client = AsyncWebClient(

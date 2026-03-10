@@ -46,48 +46,42 @@ class InteractionRegistry:
 
         if interaction_type == "block_actions":
             if action_id:
-                # Prefix-based routing for object viewing
-                if any(
-                    action_id.startswith(p)
-                    for p in (
-                        "view_object",
-                        "select_object",
-                        "view_contact_company",
-                        "view_contact_deals",
-                        "view_company_deals",
-                        "view_deals",
-                        "view_contacts",
-                        "view_contact_meetings",
-                    )
-                ):
+                parts = action_id.split(":")
+                prefix = parts[0]
+
+                # Exact prefix routing for object viewing
+                if prefix in {
+                    "view_object",
+                    "select_object",
+                    "view_contact_company",
+                    "view_contact_deals",
+                    "view_company_deals",
+                    "view_deals",
+                    "view_contacts",
+                    "view_contact_meetings",
+                }:
                     return self.object_view
 
-                # Opener-based routing for modals
-                if any(
-                    action_id.startswith(p)
-                    for p in (
-                        "open_add_note_modal",
-                        "open_update_lead_type_modal",
-                        "open_ai_recap_modal",
-                        "reassign_owner",
-                        "open_calculator",
-                        "schedule_meeting",
-                    )
-                ):
+                # Exact prefix routing for modals
+                if prefix in {
+                    "open_add_note_modal",
+                    "open_update_lead_type_modal",
+                    "open_ai_recap_modal",
+                    "reassign_owner",
+                    "open_calculator",
+                    "schedule_meeting",
+                }:
                     return self.modal
 
-                # Action-based routing
-                if (
-                    action_id == "update_deal_stage"
-                    or action_id
-                    in (
-                        "ticket_claim",
-                        "ticket_close",
-                        "ticket_delete",
-                        "ticket_transcript",
-                    )
-                    or action_id.startswith("gated_feature_click:")
-                ):
+                # Exact prefix routing
+                if prefix in {
+                    "update_deal_stage",
+                    "ticket_claim",
+                    "ticket_close",
+                    "ticket_delete",
+                    "ticket_transcript",
+                    "gated_feature_click",
+                }:
                     return self.action_button
 
         return None

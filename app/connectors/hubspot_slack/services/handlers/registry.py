@@ -65,7 +65,8 @@ class InteractionRegistry:
                 # Exact prefix routing for modals
                 if prefix in {
                     "open_add_note_modal",
-                    "open_update_lead_type_modal",
+                    "open_add_task_modal",
+                    "open_update_deal_type_modal",
                     "open_ai_recap_modal",
                     "reassign_owner",
                     "open_calculator",

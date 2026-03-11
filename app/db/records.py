@@ -97,7 +97,9 @@ class IntegrationRecord(BaseRecord):
 
     @property
     def slack_bot_token(self) -> str | None:
-        return self.credentials.get("slack_bot_token")
+        return self.credentials.get("access_token") or self.credentials.get(
+            "slack_bot_token"
+        )
 
     @property
     def portal_id(self) -> str | None:

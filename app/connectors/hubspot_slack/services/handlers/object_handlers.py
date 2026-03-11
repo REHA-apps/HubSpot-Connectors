@@ -4,8 +4,6 @@ import json
 from collections.abc import Mapping
 from typing import Any, cast
 
-from slack_sdk.web.async_client import AsyncWebClient
-
 from app.connectors.hubspot_slack.ui.modal_builder import ModalBuilder
 from app.core.logging import get_logger
 from app.db.records import IntegrationRecord
@@ -109,7 +107,7 @@ class ObjectViewHandler(InteractionHandler):
                 modal["private_metadata"] = json.dumps(private_metadata)
             else:
                 modal["private_metadata"] = str(private_metadata)
-        client = AsyncWebClient(token=integration.credentials.get("slack_bot_token"))
+        client = await self.integration_service.get_slack_client(integration)
         await client.views_update(view_id=view_id, view=modal)
 
     @interaction_handler("view_contact_company")
@@ -164,8 +162,14 @@ class ObjectViewHandler(InteractionHandler):
             analysis = await self.ai.analyze_polymorphic(company, "company")
             from app.domains.ai.service import AICompanyAnalysis
 
+            is_pro = await self.integration_service.is_pro_workspace(
+                integration.workspace_id
+            )
             card = messaging_service.cards.build_company(
-                company, cast(AICompanyAnalysis, analysis), include_actions=False
+                company,
+                cast(AICompanyAnalysis, analysis),
+                include_actions=False,
+                is_pro=is_pro,
             )
             success = False
             if view_id:
@@ -235,10 +239,13 @@ class ObjectViewHandler(InteractionHandler):
             to_object_type="deal",
         )
         cards = messaging_service.cards
+        is_pro = await self.integration_service.is_pro_workspace(
+            integration.workspace_id
+        )
         if not deals:
             card = cards.build_empty("No deals found for this contact.")
         else:
-            card = cards.build_deals_list(deals)
+            card = cards.build_deals_list(deals, is_pro=is_pro)
         success = False
         if view_id:
             success = await self._update_modal(
@@ -284,10 +291,13 @@ class ObjectViewHandler(InteractionHandler):
             to_object_type="deal",
         )
         cards = messaging_service.cards
+        is_pro = await self.integration_service.is_pro_workspace(
+            integration.workspace_id
+        )
         if not deals:
             card = cards.build_empty("No deals found for this company.")
         else:
-            card = cards.build_deals_list(deals)
+            card = cards.build_deals_list(deals, is_pro=is_pro)
         success = False
         if view_id:
             success = await self._update_modal(
@@ -333,10 +343,13 @@ class ObjectViewHandler(InteractionHandler):
             to_object_type="deal",
         )
         cards = messaging_service.cards
+        is_pro = await self.integration_service.is_pro_workspace(
+            integration.workspace_id
+        )
         if not deals:
             card = cards.build_empty("No deals found for this contact.")
         else:
-            card = cards.build_deals_list(deals)
+            card = cards.build_deals_list(deals, is_pro=is_pro)
         success = False
         if view_id:
             success = await self._update_modal(
@@ -382,10 +395,13 @@ class ObjectViewHandler(InteractionHandler):
             to_object_type="contact",
         )
         cards = messaging_service.cards
+        is_pro = await self.integration_service.is_pro_workspace(
+            integration.workspace_id
+        )
         if not contacts:
             card = cards.build_empty("No contacts found for this company.")
         else:
-            card = cards.build_contacts_list(contacts)
+            card = cards.build_contacts_list(contacts, is_pro=is_pro)
         success = False
         if view_id:
             success = await self._update_modal(
@@ -435,13 +451,16 @@ class ObjectViewHandler(InteractionHandler):
             else:
                 from app.utils.transformers import to_datetime
 
+                is_pro = await self.integration_service.is_pro_workspace(
+                    integration.workspace_id
+                )
                 meetings.sort(
                     key=lambda x: to_datetime(
                         x.get("properties", {}).get("hs_meeting_start_time")
                     ),
                     reverse=True,
                 )
-                card = cards.build_meetings_list(meetings)
+                card = cards.build_meetings_list(meetings, is_pro=is_pro)
             if view_id:
                 await self._update_modal(
                     view_id, card, "Associated Meetings", integration
@@ -472,8 +491,8 @@ class ObjectViewHandler(InteractionHandler):
             else:
                 user_id = str(kwargs.get("payload", {}).get("user", {}).get("id", ""))
                 if user_id:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
+                    client = await self.integration_service.get_slack_client(
+                        integration
                     )
                     if channel_id:
                         await client.chat_postEphemeral(

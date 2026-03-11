@@ -7,6 +7,7 @@ from app.domains.ai.service import (
     AICompanyAnalysis,
     AIContactAnalysis,
     AIDealAnalysis,
+    AILeadAnalysis,
 )
 
 from .components import ComponentsMixin
@@ -30,6 +31,9 @@ class AICardsMixin(ComponentsMixin):
         elif "Company" in type_name:
             subtitle = "Company Insights"
             emoji = "🏢"
+        elif "Lead" in type_name:
+            subtitle = "Lead Insights"
+            emoji = "🎯"
         elif "Ticket" in type_name:
             subtitle = "Ticket Insights"
             emoji = "🎫"
@@ -134,4 +138,20 @@ class AICardsMixin(ComponentsMixin):
             emoji="💰",
             content=analysis.summary,
             secondary_content=secondary,
+        )
+
+    def build_lead_ai(self, analysis: AILeadAnalysis) -> UnifiedCard:
+        """Builds a UnifiedCard for Lead-specific AI insights."""
+        return UnifiedCard(
+            title="Lead Insights",
+            subtitle="Prospect Analysis",
+            emoji="🎯",
+            content=analysis.summary,
+            metrics=[
+                ("Lead Score", str(analysis.score)),
+                ("Status", analysis.status_label),
+            ],
+            secondary_content=[
+                ("Next Action", analysis.next_action),
+            ],
         )

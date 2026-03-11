@@ -9,8 +9,12 @@ from app.domains.ai.service import AIService
 from app.domains.crm.hubspot.service import HubSpotService
 from app.domains.crm.integration_service import IntegrationService
 from app.domains.messaging.base import MessagingService
+from app.utils.cache import AsyncTTL
 
 logger = get_logger("notification.service")
+
+# Global debounce cache to prevent duplicate rapid webhooks (creation + propertyChange)
+_recent_notifications = AsyncTTL[bool](ttl=15)
 
 
 class NotificationService:
@@ -83,7 +87,11 @@ class NotificationService:
         # 2. Determine Object Type
         obj_type = self._map_subscription_to_type(sub_type, event)
         if not obj_type:
-            logger.info("Skipping unhandled subscription type: %s", sub_type)
+            logger.info(
+                "Skipping unhandled subscription type: %s (objectTypeId: %s)",
+                sub_type,
+                event.get("objectTypeId"),
+            )
             return
 
         # 3. Fetch Object from HubSpot
@@ -109,6 +117,22 @@ class NotificationService:
         if not is_creation and not self._should_notify(analysis, event):
             logger.debug(
                 "Skipping notification for %s %s (logic: below relevant threshold)",
+                obj_type,
+                object_id,
+            )
+            return
+
+        # 5b. Debounce Duplicate Webhooks
+        # HubSpot often fires multiple events simultaneously
+        # (e.g. object.creation + object.propertyChange).
+        debounce_key = f"notif_debounce:{workspace_id}:{obj_type}:{object_id}"
+
+        async def fetch_false():
+            return False
+
+        if await _recent_notifications.get_or_fetch(debounce_key, fetch_false):
+            logger.info(
+                "Skipping notification for %s %s (debounced recent update)",
                 obj_type,
                 object_id,
             )
@@ -211,6 +235,9 @@ class NotificationService:
             pipelines=pipelines,
         )
 
+        if sent_ts:
+            await _recent_notifications.set(debounce_key, True)
+
         # 7. Persist new thread mapping if this was the first message
         if is_pro and obj_type == "ticket" and sent_ts and not thread_ts:
             channel = await messaging_service._resolve_channel(workspace_id, None)  # type: ignore
@@ -250,11 +277,15 @@ class NotificationService:
         if sub_type.startswith("object.") and event:
             object_type_id_map = {
                 "0-1": "contact",
-                "0-2": "company",  # HubSpot: 0-2 = companies
-                "0-3": "deal",  # HubSpot: 0-3 = deals
-                "0-4": "task",
+                "0-2": "company",
+                "0-3": "deal",
                 "0-5": "ticket",
+                "0-9": "note",
+                "0-27": "task",
+                "0-46": "task",  # sometimes 0-46 represents tasks or some engagements
                 "0-47": "meeting",
+                "0-48": "call",
+                "0-49": "email",
                 "0-136": "lead",
             }
             object_type_id = str(event.get("objectTypeId", ""))

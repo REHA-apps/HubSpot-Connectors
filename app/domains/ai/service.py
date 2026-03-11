@@ -384,56 +384,62 @@ class AIService:
             elif etype == "tasks":
                 subject = props.get("hs_task_subject", "Task")
                 lines.append(f"• ✅ **Task**: Created on {dt_str} to '{subject}'")
+            elif etype == "notes":
+                body = props.get("hs_note_body", "")
+                # Clean up HTML since no _strip_html is natively here
+                import re
+
+                body = re.sub(r"<[^>]+>", " ", body).strip()
+                if len(body) > 60:
+                    body = body[:57] + "..."
+                if body:
+                    lines.append(f"• 📝 **Note**: Logged on {dt_str} — '{body}'")
+                else:
+                    lines.append(f"• 📝 **Note**: Logged on {dt_str}")
             else:
-                lines.append(f"• 📝 **Activity**: Logged on {dt_str}")
+                lines.append(f"• 📌 **Activity**: Logged on {dt_str}")
 
         return "\n".join(lines)
 
     def _format_associated_objects(
         self, associated_objects: dict[str, list[dict[str, Any]]] | None
     ) -> str:
-        """Format associated CRM objects as text for Slack messages.
-
-        Note: The HubSpot UI extension card displays associations natively via
-        CrmAssociationTable components and does not use this output.
-        """
+        """Format associated CRM objects as text for Slack messages."""
         if not associated_objects:
             return ""
 
-        lines = []
-
-        contacts = associated_objects.get("contacts")
+        lines = ["\n**Associations:**"]
+        # Contacts
+        contacts = (associated_objects or {}).get("contacts", [])
         if contacts:
-            lines.append("\n**Associated Contacts:**")
             for c in contacts[:5]:
                 props = c.get("properties") or {}
-                fname = props.get("firstname", "")
-                lname = props.get("lastname", "")
-                email = props.get("email", "No Email")
-                name = f"{fname} {lname}".strip() or "Unknown Contact"
-                lines.append(f"• 👤 {name} ({email})")
+                name = (
+                    f"{props.get('firstname', '')} {props.get('lastname', '')}".strip()
+                    or props.get("email", "Contact")
+                )
+                lines.append(f"• 👤 {name}")
 
-        companies = associated_objects.get("companies")
+        # Companies
+        companies = (associated_objects or {}).get("companies", [])
         if companies:
-            lines.append("\n**Associated Companies:**")
             for c in companies[:5]:
                 props = c.get("properties") or {}
-                name = props.get("name", "Unknown Company")
-                domain = props.get("domain", "")
-                lines.append(f"• 🏢 {name}" + (f" ({domain})" if domain else ""))
+                name = props.get("name", "Company")
+                lines.append(f"• 🏢 {name}")
 
-        deals = associated_objects.get("deals")
+        # Deals
+        deals = (associated_objects or {}).get("deals", [])
         if deals:
-            lines.append("\n**Associated Deals:**")
             for d in deals[:5]:
                 props = d.get("properties") or {}
-                name = props.get("dealname", "Unknown Deal")
-                stage = props.get("dealstage", "")
-                lines.append(f"• 🤝 {name}" + (f" (Stage: {stage})" if stage else ""))
+                name = props.get("dealname", "Deal")
+                amount = props.get("amount") or ""
+                lines.append(f"• 💰 {name} ({amount})")
 
-        tickets = associated_objects.get("tickets")
+        # Tickets
+        tickets = (associated_objects or {}).get("tickets", [])
         if tickets:
-            lines.append("\n**Associated Tickets:**")
             for t in tickets[:5]:
                 props = t.get("properties") or {}
                 subject = props.get("subject", "Unknown Ticket")
@@ -446,87 +452,85 @@ class AIService:
     # POLYMORPHIC ENTRY
     # ======================================================
 
-    async def analyze_polymorphic(  # noqa: PLR0911
+    async def analyze_polymorphic(
         self,
         obj: Mapping[str, Any],
         object_type: str,
-        *,
-        engagements: Sequence[Mapping[str, Any]] | None = None,
-        associated_objects: dict[str, list[dict[str, Any]]] | None = None,
-        include_associations: bool = True,
+        **kwargs: Any,
     ) -> (
         AIContactAnalysis
         | AICompanyAnalysis
         | AIDealAnalysis
         | AITicketAnalysis
         | AITaskAnalysis
-        | AIConversationAnalysis
-        | AIEngagementAnalysis
         | AILeadAnalysis
         | AICommunicationAnalysis
         | AIAppointmentAnalysis
-        | None
+        | AIConversationAnalysis
+        | AIEngagementAnalysis
     ):
-        normalized = object_type.lower()
+        """Dispatches to the correct analyzer based on HubSpot object type or ID."""
+        # Handle both string types ("contact") and numeric IDs ("0-1")
+        object_type = str(object_type).lower()
 
-        # HubSpot numeric object types support
-        if normalized in {"contact", "0-1"}:
-            return await self.analyze_contact(
-                obj,
-                engagements=engagements,
-                associated_objects=associated_objects,
-                include_associations=include_associations,
-            )
+        # Engagement collection - respect overrides in kwargs
+        engagements = kwargs.pop("engagements", obj.get("engagements") or [])
+        associated_objects = kwargs.pop(
+            "associated_objects", obj.get("associated_objects") or {}
+        )
 
-        if normalized in {"lead", "0-136"}:
-            return await self.analyze_lead(obj)
-
-        if normalized in {"company", "0-2"}:
-            return await self.analyze_company(
-                obj,
-                associated_objects=associated_objects,
-                include_associations=include_associations,
-            )
-
-        if normalized in {"deal", "0-3"}:
-            return await self.analyze_deal(
-                obj,
-                associated_objects=associated_objects,
-                engagements=engagements,
-                include_associations=include_associations,
-            )
-
-        if normalized in {"ticket", "0-5"}:
-            return await self.analyze_ticket(
-                obj,
-                include_associations=include_associations,
-            )
-
-        if normalized in {"task", "0-4"}:
-            return await self.analyze_task(obj)
-
-        if normalized in {"communication", "0-18"}:
-            return await self.analyze_communication(obj)
-
-        if normalized in {"appointment", "0-421"}:
-            return await self.analyze_appointment(obj)
-
-        if normalized in {"conversation"}:
-            return await self.analyze_conversation(obj)
-
-        if normalized in {
-            "call",
-            "meeting",
-            "email",
-            "note",
-            "0-48",
-            "0-47",
-            "0-49",
-            "0-46",
-        }:
-            return await self.analyze_engagement(obj)
-
-        raise ValueError(f"Unsupported object type: {object_type}")
+        match object_type:
+            case "contact" | "0-1":
+                return await self.analyze_contact(
+                    obj,
+                    engagements=engagements,
+                    associated_objects=associated_objects,
+                    **kwargs,
+                )
+            case "company" | "0-2":
+                return await self.analyze_company(
+                    obj,
+                    engagements=engagements,
+                    associated_objects=associated_objects,
+                    **kwargs,
+                )
+            case "deal" | "0-3":
+                return await self.analyze_deal(
+                    obj,
+                    engagements=engagements,
+                    associated_objects=associated_objects,
+                    **kwargs,
+                )
+            case "ticket" | "0-5":
+                return await self.analyze_ticket(
+                    obj,
+                    associated_objects=associated_objects,
+                    **kwargs,
+                )
+            case "task" | "0-27":
+                return await self.analyze_task(obj, **kwargs)
+            case "lead" | "0-13" | "0-136":
+                return await self.analyze_lead(obj, **kwargs)
+            case "communication" | "0-18":
+                return await self.analyze_communication(obj, **kwargs)
+            case "appointment" | "0-421":
+                return await self.analyze_appointment(obj, **kwargs)
+            case "conversation":
+                return await self.analyze_conversation(obj, **kwargs)
+            case (
+                "call"
+                | "meeting"
+                | "email"
+                | "note"
+                | "0-48"
+                | "0-47"
+                | "0-49"
+                | "0-46"
+                | "0-9"
+            ):
+                return await self.analyze_engagement(obj, **kwargs)
+            case _:
+                raise ValueError(f"Unsupported object type: {object_type}")
 
     # ======================================================
     # CONTACT
@@ -538,6 +542,7 @@ class AIService:
         engagements: Sequence[Mapping[str, Any]] | None = None,
         associated_objects: dict[str, list[dict[str, Any]]] | None = None,
         include_associations: bool = True,
+        **kwargs: Any,
     ) -> AIContactAnalysis:
         props = obj.get("properties") or {}
         workspace_id = obj.get("workspace_id")
@@ -561,9 +566,7 @@ class AIService:
 
         score = max(0, min(score, cfg.max_score))
 
-        reasoning = self._contact_reasoning(props, cfg)
-        summary = self._contact_summary(props)
-        next_action = self._next_action(props)
+        summary = self._contact_summary(props, metrics)
 
         engagements_text = self._format_engagements(engagements)
         assoc_text = ""
@@ -575,55 +578,139 @@ class AIService:
         return AIContactAnalysis(
             insight=insight,
             score=score,
-            score_reason=reasoning,
-            next_best_action=next_action,
-            next_action=next_action,
+            score_reason=self._contact_reasoning(props, cfg, score),
+            next_best_action=self._next_action(props, metrics),
+            next_action=self._next_action(props, metrics),
             next_action_reason="Adjusted for engagement behavior.",
             summary=summary,
-            reasoning=reasoning,
+            reasoning=self._contact_reasoning(props, cfg, score),
         )
 
-    def _contact_summary(self, props: Mapping[str, Any]) -> str:
-        return (
-            f"{props.get('firstname', 'Contact')} at "
-            f"{props.get('company', 'Unknown company')} "
-            f"has {props.get('hs_analytics_num_visits', 0)} total visits."
+    def _contact_summary(
+        self,
+        props: Mapping[str, Any],
+        metrics: dict[str, Any] | None = None,
+    ) -> str:
+        name = (
+            f"{props.get('firstname', '')} {props.get('lastname', '')}".strip()
+            or "Contact"
         )
+        company = props.get("company", "Unknown company")
+        visits = to_int(props.get("hs_analytics_num_visits")) or 0
+        lifecycle = (props.get("lifecyclestage") or "").lower()
+
+        # Readable lifecycle label
+        stage_labels = {
+            "subscriber": "Subscriber",
+            "lead": "Lead",
+            "marketingqualifiedlead": "MQL",
+            "salesqualifiedlead": "SQL",
+            "opportunity": "Opportunity",
+            "customer": "Customer",
+            "evangelist": "Evangelist",
+            "other": "Other",
+        }
+        stage_label = stage_labels.get(lifecycle, lifecycle.title() or "Unknown")
+
+        parts = [f"{name} ({stage_label}) at {company}"]
+        parts.append(f"{visits} visits")
+
+        if metrics:
+            count_30d = metrics.get("count_30d", 0)
+            last_days = metrics.get("last_activity_days")
+            if count_30d:
+                parts.append(f"{count_30d} engagements in 30d")
+            if last_days is not None:
+                if last_days == 0:
+                    parts.append("last active today")
+                elif last_days == 1:
+                    parts.append("last active yesterday")
+                else:
+                    parts.append(f"last active {last_days}d ago")
+
+        return " — ".join(parts[:2]) + ", " + ", ".join(parts[2:]) + "."
 
     def _contact_reasoning(
         self,
         props: Mapping[str, Any],
         cfg: ScoringConfig,
+        total_score: int = 0,
     ) -> str:
         f = self._extract_features(props)
-        reasons = []
+        parts: list[str] = []
 
-        if f["visits"] >= cfg.visit_threshold_high:
-            reasons.append("Strong engagement")
+        # Visit contribution
+        if f["visits"] >= cfg.visit_threshold_very_high:
+            parts.append(f"+{cfg.weight_high_visit}pts visits ({f['visits']})")
+        elif f["visits"] >= cfg.visit_threshold_high:
+            pts = int(cfg.weight_high_visit * 0.8)
+            parts.append(f"+{pts}pts visits ({f['visits']})")
         elif f["visits"] >= cfg.visit_threshold_moderate:
-            reasons.append("Moderate engagement")
-        else:
-            reasons.append("Low engagement")
+            parts.append(f"+{cfg.weight_moderate_visit}pts visits ({f['visits']})")
 
         if f["lifecycle"] in QUALIFIED_STAGES:
-            reasons.append("Qualified lifecycle stage")
+            parts.append(f"+{cfg.weight_qualified_lifecycle}pts qualified stage")
 
-        if f["has_company"] and f["has_email"]:
-            reasons.append("Complete profile")
+        if f["has_company"]:
+            parts.append(f"+{cfg.weight_has_company}pts company")
+        if f["has_email"]:
+            parts.append(f"+{cfg.weight_has_email}pts email")
 
-        return ", ".join(reasons)
+        recency = self._recency_bonus(f["props"], cfg)
+        if recency:
+            parts.append(f"+{recency}pts recency")
 
-    def _next_action(self, props: Mapping[str, Any]) -> str:
+        velocity = self._velocity_bonus(f["props"], cfg)
+        if velocity:
+            parts.append(f"+{velocity}pts velocity")
+
+        return (
+            f"Score {total_score}: " + ", ".join(parts)
+            if parts
+            else f"Score {total_score}: baseline"
+        )
+
+    def _next_action(
+        self,
+        props: Mapping[str, Any],
+        metrics: dict[str, Any] | None = None,
+    ) -> str:
         f = self._extract_features(props)
+        last_days = metrics.get("last_activity_days") if metrics else None
+        count_30d = metrics.get("count_30d", 0) if metrics else 0
 
-        if f["lifecycle"] == "lead" and f["visits"] >= 5:  # noqa: PLR2004
-            return "Reach out — engagement increasing."
+        # Stale contact — re-engage
+        if last_days is not None and last_days > 14:  # noqa: PLR2004
+            return (
+                f"No activity in {last_days} days — re-engage with a value-add email."
+            )
 
+        # High recent activity — capitalize
+        if count_30d >= 5:  # noqa: PLR2004
+            return (
+                f"{count_30d} engagements in 30 days "
+                "— propose next steps before momentum fades."
+            )
+
+        # SQL ready for sales
         if f["lifecycle"] == "salesqualifiedlead":
-            return "Schedule discovery call."
+            return "SQL status — schedule discovery call."
 
+        # MQL needs nurturing
+        if f["lifecycle"] == "marketingqualifiedlead":
+            return "MQL status — nurture with targeted content."
+
+        # New lead with high visits
+        if f["lifecycle"] == "lead" and f["visits"] >= 5:  # noqa: PLR2004
+            return f"Lead with {f['visits']} visits — schedule intro call within 48h."
+
+        # High intent visitor
         if f["visits"] >= 15:  # noqa: PLR2004
-            return "High intent — prioritize follow-up."
+            return f"High intent ({f['visits']} visits) — prioritize follow-up."
+
+        # Recently active but low engagement
+        if last_days is not None and last_days <= 2:  # noqa: PLR2004
+            return "Recently active — send a timely follow-up."
 
         return "Add follow-up task."
 
@@ -634,12 +721,42 @@ class AIService:
     async def analyze_company(
         self,
         company: Mapping[str, Any],
+        engagements: Sequence[Mapping[str, Any]] | None = None,
         associated_objects: dict[str, list[dict[str, Any]]] | None = None,
         include_associations: bool = True,
+        **kwargs: Any,
     ) -> AICompanyAnalysis:
         props = company.get("properties") or {}
+        name = props.get("name", "Company")
         visits = to_int(props.get("hs_analytics_num_visits")) or 0
-        health = "Healthy" if visits > 10 else "Needs Attention"  # noqa: PLR2004
+        industry = props.get("industry") or ""
+        employees = to_int(props.get("numberofemployees")) or 0
+
+        # Count associated objects
+        n_contacts = len((associated_objects or {}).get("contacts", []))
+        n_deals = len((associated_objects or {}).get("deals", []))
+
+        # Multi-factor health
+        health_score = 0
+        if visits > 10:  # noqa: PLR2004
+            health_score += 1
+        if n_contacts >= 2:  # noqa: PLR2004
+            health_score += 1
+        if n_deals >= 1:
+            health_score += 1
+
+        if health_score >= 3:  # noqa: PLR2004
+            health = "Strong"
+            next_action = "Expand footprint — identify new stakeholders."
+        elif health_score >= 2:  # noqa: PLR2004
+            health = "Healthy"
+            next_action = "Maintain momentum — schedule quarterly review."
+        elif health_score >= 1:
+            health = "Needs Attention"
+            next_action = "Re-engage — no recent activity or few contacts."
+        else:
+            health = "At Risk"
+            next_action = "Investigate — no visits, contacts, or deals."
 
         top = None
         if associated_objects and "contacts" in associated_objects:
@@ -648,14 +765,24 @@ class AIService:
                 company.get("workspace_id"),
             )
 
-        summary = f"{props.get('name', 'Company')} with {visits} visits"
+        # Build rich summary
+        parts = [name]
+        if industry:
+            parts[0] += f" ({industry})"
+        if employees:
+            parts.append(f"{employees} employees")
+        parts.append(f"{visits} visits")
+        parts.append(f"{n_contacts} contacts")
+        parts.append(f"{n_deals} active deals")
+
+        summary = ", ".join(parts) + "."
         if include_associations:
             summary += self._format_associated_objects(associated_objects)
 
         return AICompanyAnalysis(
             summary=summary,
             health=health,
-            next_action="Assign account manager.",
+            next_action=next_action,
             top_actions=top,
         )
 
@@ -666,38 +793,96 @@ class AIService:
     async def analyze_deal(
         self,
         deal: Mapping[str, Any],
-        associated_objects: dict[str, list[dict[str, Any]]] | None = None,
         engagements: Sequence[Mapping[str, Any]] | None = None,
+        associated_objects: dict[str, list[dict[str, Any]]] | None = None,
         include_associations: bool = True,
+        owner_name: str | None = None,
+        **kwargs: Any,
     ) -> AIDealAnalysis:
         props = deal.get("properties") or {}
         workspace_id = deal.get("workspace_id")
         cfg = await self._get_workspace_config(workspace_id)
 
-        score = 50 + self._stage_staleness_penalty(props, cfg)
-
+        # Basic engagement metrics
         metrics = self._engagement_metrics(engagements)
+        last_act = metrics["last_activity_days"]
 
+        # Risk Score (0-100)
+        score = 50 + self._stage_staleness_penalty(props, cfg)
         if metrics["recent"]:
             score += cfg.deal_recent_activity_risk_reduction
-
-        last_act = metrics["last_activity_days"]
         if last_act is not None and last_act > 30:  # noqa: PLR2004
-            score += 10  # increase risk
+            score += 10
 
         stage = (props.get("dealstage") or "").lower()
+        deal_name = props.get("dealname", "Deal")
+        amount = props.get("amount") or ""
 
+        # Stage label
+        stage_labels = {
+            "appointmentscheduled": "Appointment Scheduled",
+            "qualifiedtobuy": "Qualified to Buy",
+            "presentationscheduled": "Presentation Scheduled",
+            "decisionmakerboughtin": "Decision Maker Bought In",
+            "contractsent": "Contract Sent",
+            "closedwon": "Closed Won",
+            "closedlost": "Closed Lost",
+        }
+        stage_label = stage_labels.get(stage, stage.replace("_", " ").title())
+
+        # Closing status
+        close_date = props.get("closedate")
+        close_days = None
+        if close_date:
+            try:
+                close_dt = datetime.fromisoformat(close_date.replace("Z", "+00:00"))
+                close_days = (close_dt - datetime.now(UTC)).days
+            except Exception:
+                pass
+
+        # Determine risk and next action
         if stage.startswith("closedlost"):
             risk = "Lost"
-            next_action = "Review loss reasons."
+            next_action = "Review loss reasons and document learnings."
         elif stage.startswith("closedwon"):
             risk = "Won"
             next_action = "Handoff to onboarding."
+        elif last_act is not None and last_act > 14:  # noqa: PLR2004
+            risk = "Stalling"
+            next_action = (
+                f"No activity in {last_act} days — re-engage before deal goes cold."
+            )
+        elif close_days is not None and 0 < close_days <= 7:  # noqa: PLR2004
+            risk = "Closing Soon"
+            next_action = (
+                f"Closing in {close_days} days — confirm commitment and finalize terms."
+            )
+        elif close_days is not None and close_days < 0:
+            risk = "Overdue"
+            next_action = "Close date passed — update timeline or close."
         else:
             risk = "Open"
-            next_action = "Ensure next meeting scheduled."
+            next_action = "Ensure next meeting is scheduled."
 
-        summary = f"{props.get('dealname', 'Deal')} in stage '{stage}'"
+        # Rich summary: Deal Name ($Amount) — Owned by [Name]
+        main_parts = [deal_name]
+        if amount:
+            main_parts[0] += f" (${amount})"
+        if owner_name:
+            main_parts.append(f"Owned by {owner_name}")
+
+        extra_parts = []
+        if close_days is not None and close_days > 0:
+            extra_parts.append(f"closing in {close_days}d")
+        elif close_days is not None and close_days < 0:
+            extra_parts.append(f"overdue by {abs(close_days)}d")
+        if last_act is not None:
+            extra_parts.append(f"last activity {last_act}d ago")
+
+        summary = " — ".join(main_parts)
+        if extra_parts:
+            summary += ", " + ", ".join(extra_parts)
+        summary += "."
 
         if include_associations:
             summary += self._format_associated_objects(associated_objects)
@@ -708,7 +893,8 @@ class AIService:
             risk=risk,
             next_action=next_action,
             score=max(0, min(score, 100)),
-            score_reason="Stage + engagement activity considered.",
+            score_reason=f"Risk {score}/100: stage={stage_label}, "
+            f"activity={'recent' if metrics['recent'] else 'stale'}.",
             top_actions=None,
         )
 
@@ -721,21 +907,48 @@ class AIService:
         ticket: Mapping[str, Any],
         associated_objects: dict[str, list[dict[str, Any]]] | None = None,
         include_associations: bool = True,
+        **kwargs: Any,
     ) -> AITicketAnalysis:
         props = ticket.get("properties") or {}
+        subject = props.get("subject", "Ticket")
         priority = (props.get("hs_ticket_priority") or "").upper()
+        category = props.get("hs_ticket_category") or ""
+        created = props.get("createdate") or ""
 
+        # Ticket age
+        age_days = None
+        if created:
+            try:
+                dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                age_days = (datetime.now(UTC) - dt).days
+            except Exception:
+                pass
+
+        # Urgency + action based on priority + age
         if priority == "HIGH":
             urgency = "Critical"
-            next_action = "Assign immediately."
+            if age_days is not None and age_days > 3:  # noqa: PLR2004
+                next_action = f"HIGH priority open {age_days}d — escalate immediately."
+            else:
+                next_action = "Assign and respond within 4 hours."
         elif priority == "MEDIUM":
             urgency = "Moderate"
-            next_action = "Triage and assign."
+            if age_days is not None and age_days > 7:  # noqa: PLR2004
+                next_action = f"Open {age_days} days — follow up or escalate."
+            else:
+                next_action = "Triage and assign within 24 hours."
         else:
             urgency = "Low"
             next_action = "Review in next cycle."
 
-        summary = f"{props.get('subject', 'Ticket')} — Priority: {priority}"
+        # Rich summary
+        parts = [subject, f"Priority: {priority or 'Normal'}"]
+        if category:
+            parts.append(f"Category: {category}")
+        if age_days is not None:
+            parts.append(f"open {age_days}d")
+
+        summary = " — ".join(parts[:2]) + ", " + ", ".join(parts[2:]) + "."
         if include_associations:
             summary += self._format_associated_objects(associated_objects)
 
@@ -752,6 +965,7 @@ class AIService:
     async def analyze_task(
         self,
         task: Mapping[str, Any],
+        **kwargs: Any,
     ) -> AITaskAnalysis:
         props = task.get("properties") or {}
         status = (props.get("hs_task_status") or "").upper()
@@ -779,6 +993,7 @@ class AIService:
     async def analyze_lead(
         self,
         lead: Mapping[str, Any],
+        **kwargs: Any,
     ) -> AILeadAnalysis:
         props = lead.get("properties") or {}
         workspace_id = lead.get("workspace_id")
@@ -804,9 +1019,14 @@ class AIService:
             next_action = "Assign and make first contact."
 
         score = self.generate_score(props, cfg)
+        lead_score = props.get("hubspotscore")
+
+        summary = f"Lead: {name} — Status: {status}"
+        if lead_score:
+            summary += f", Score: {lead_score}"
 
         return AILeadAnalysis(
-            summary=f"Lead: {name} — Status: {status}",
+            summary=summary,
             status_label=label,
             next_action=next_action,
             score=score,
@@ -819,18 +1039,14 @@ class AIService:
     async def analyze_communication(
         self,
         comm: Mapping[str, Any],
+        **kwargs: Any,
     ) -> AICommunicationAnalysis:
         props = comm.get("properties") or {}
-        channel = (props.get("hs_communication_channel_type") or "Unknown").title()
-        body = props.get("hs_communication_body") or ""
-
-        if len(body) > 100:  # noqa: PLR2004
-            body = body[:97] + "..."
+        channel = props.get("hs_communication_channel_type") or "Email"
+        subject = props.get("hs_communication_subject") or "Communication"
 
         return AICommunicationAnalysis(
-            summary=(
-                f"{channel} message: {body}" if body else f"{channel} message logged."
-            ),
+            summary=f"{channel} — {subject}",
             channel=channel,
             next_action="Reply via same channel if pending.",
         )
@@ -842,6 +1058,7 @@ class AIService:
     async def analyze_appointment(
         self,
         appt: Mapping[str, Any],
+        **kwargs: Any,
     ) -> AIAppointmentAnalysis:
         props = appt.get("properties") or {}
         name = props.get("hs_appointment_name") or "Appointment"
@@ -878,6 +1095,7 @@ class AIService:
     async def analyze_conversation(
         self,
         conv: Mapping[str, Any],
+        **kwargs: Any,
     ) -> AIConversationAnalysis:
         messages = conv.get("messages", [])
         last = messages[-1].get("text", "") if messages else "No messages"
@@ -891,20 +1109,51 @@ class AIService:
             next_action="Reply if still open.",
         )
 
+    # ======================================================
+    # ENGAGEMENT
+    # ======================================================
+
     async def analyze_engagement(
         self,
         engagement: Mapping[str, Any],
+        **kwargs: Any,
     ) -> AIEngagementAnalysis:
         props = engagement.get("properties") or {}
-        etype = engagement.get("type") or "engagement"
+        etype = (engagement.get("type") or "engagement").lower()
 
-        subject = props.get("hs_subject") or props.get("hs_body_preview") or ""
+        # HubSpot v3 Engagement Property Mapping
+        # Emails: hs_email_subject, hs_email_text
+        # Calls: hs_call_title, hs_call_body
+        # Notes: (no subject), hs_note_body
+        subject = (
+            props.get("hs_email_subject")
+            or props.get("hs_call_title")
+            or props.get("hs_subject")
+            or props.get("hs_body_preview")
+            or ""
+        )
+
+        body = (
+            props.get("hs_email_text")
+            or props.get("hs_email_html")
+            or props.get("hs_call_body")
+            or props.get("hs_note_body")
+            or ""
+        )
 
         if len(subject) > 80:  # noqa: PLR2004
             subject = subject[:77] + "..."
 
+        summary = f"{etype.title()} — {subject}"
+        if body and body.strip() and body not in subject:
+            # Clean HTML if necessary or just truncate
+            clean_body = body.strip()
+            if len(clean_body) > 300:  # noqa: PLR2004
+                clean_body = clean_body[:297] + "..."
+            summary += f"\n\n{clean_body}"
+
         return AIEngagementAnalysis(
-            summary=f"{etype.title()} — {subject}",
+            summary=summary,
             engagement_type=etype,
             next_action="Log follow-up if required.",
         )
@@ -925,7 +1174,7 @@ class AIService:
         for obj in objects:
             props = obj.get("properties") or {}
             score = self.generate_score(props, cfg)
-            action = self._next_action(props)
+            action = self._next_action(props, metrics=None)
             scored.append((score, action))
 
         scored.sort(key=lambda x: x[0], reverse=True)

@@ -216,39 +216,20 @@ class HubSpotService(BaseCRMService):
     ) -> None:
         """Associate two CRM objects using HubSpot defined types."""
         client = await self.get_client(workspace_id)
-        type_id = 0
-        if from_type == "task":
-            if to_type == "contact":
-                type_id = 10
-            elif to_type == "deal":
-                type_id = 12
-            elif to_type == "company":
-                type_id = 14
-        elif from_type == "ticket":
-            if to_type in ("contact", "contacts"):
-                type_id = 16
-            elif to_type in ("deal", "deals"):
-                type_id = 28
-            elif to_type in ("company", "companies"):
-                type_id = 26
 
-        if type_id == 0:
-            raise ValueError(f"Unsupported association: {from_type} \u2192 {to_type}")
+        # In HubSpot v3, the type string "{fromObjectType}_to_{toObjectType}"
+        # is the most reliable way to create standard associations
+        type_val = f"{from_type}_to_{to_type}"
 
         await client.request(
-            "PUT",
+            "POST",
             f"associations/{from_type}/{to_type}/batch/create",
             json={
                 "inputs": [
                     {
                         "from": {"id": from_id},
                         "to": {"id": to_id},
-                        "types": [
-                            {
-                                "associationCategory": "HUBSPOT_DEFINED",
-                                "associationTypeId": type_id,
-                            }
-                        ],
+                        "type": type_val,
                     }
                 ]
             },
@@ -297,6 +278,7 @@ class HubSpotService(BaseCRMService):
             hs_type = pluralize_hs_type(object_type)
             engagements = []
             entities = {
+                "notes": ["hs_note_body", "hs_timestamp"],
                 "emails": ["hs_email_subject", "hs_email_text", "hs_timestamp"],
                 "meetings": [
                     "hs_meeting_title",
@@ -407,6 +389,14 @@ class HubSpotService(BaseCRMService):
                 result = await self.get_task(workspace_id, object_id)
             case "meeting":
                 result = await self.get_meeting(workspace_id, object_id)
+            case "note":
+                result = await self.get_note(workspace_id, object_id)
+            case "call":
+                result = await self.get_call(workspace_id, object_id)
+            case "email":
+                result = await self.get_email(workspace_id, object_id)
+            case "lead":
+                result = await self.get_lead(workspace_id, object_id)
             case "conversation" | "thread":
                 client = await self.get_client(workspace_id)
                 result = await client.get_inbox_thread(object_id)
@@ -431,6 +421,51 @@ class HubSpotService(BaseCRMService):
     ) -> dict[str, Any] | None:
         client = await self.get_client(workspace_id=workspace_id)
         result = await client.get_task(object_id)
+        if result:
+            result["workspace_id"] = workspace_id
+        return result
+
+    async def get_meeting(
+        self, workspace_id: str, object_id: str
+    ) -> dict[str, Any] | None:
+        client = await self.get_client(workspace_id=workspace_id)
+        result = await client.get_meeting(object_id)
+        if result:
+            result["workspace_id"] = workspace_id
+        return result
+
+    async def get_note(
+        self, workspace_id: str, object_id: str
+    ) -> dict[str, Any] | None:
+        client = await self.get_client(workspace_id=workspace_id)
+        result = await client.get_note(object_id)
+        if result:
+            result["workspace_id"] = workspace_id
+        return result
+
+    async def get_call(
+        self, workspace_id: str, object_id: str
+    ) -> dict[str, Any] | None:
+        client = await self.get_client(workspace_id=workspace_id)
+        result = await client.get_call(object_id)
+        if result:
+            result["workspace_id"] = workspace_id
+        return result
+
+    async def get_email(
+        self, workspace_id: str, object_id: str
+    ) -> dict[str, Any] | None:
+        client = await self.get_client(workspace_id=workspace_id)
+        result = await client.get_email(object_id)
+        if result:
+            result["workspace_id"] = workspace_id
+        return result
+
+    async def get_lead(
+        self, workspace_id: str, object_id: str
+    ) -> dict[str, Any] | None:
+        client = await self.get_client(workspace_id=workspace_id)
+        result = await client.get_lead(object_id)
         if result:
             result["workspace_id"] = workspace_id
         return result
@@ -468,7 +503,7 @@ class HubSpotService(BaseCRMService):
                 tokens=properties,
             )
         except Exception as e:
-            logger.error("Failed to publish app event: %s", e)
+            logger.warning("Failed to publish app event: %s", e)
 
     async def send_thread_reply(
         self, workspace_id: str, thread_id: str, text: str
@@ -679,12 +714,6 @@ class HubSpotService(BaseCRMService):
         for meeting in meetings:
             meeting["type"] = "meeting"
         return meetings
-
-    async def get_meeting(
-        self, workspace_id: str, object_id: str
-    ) -> dict[str, Any] | None:
-        client = await self.get_client(workspace_id=workspace_id)
-        return await client.get_meetings(object_id)
 
     async def update_meeting(
         self, workspace_id: str, meeting_id: str, properties: Mapping[str, Any]

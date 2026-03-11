@@ -515,7 +515,9 @@ class IntegrationService:
 
         """
         credentials = integration.credentials
-        bot_token = credentials.get("slack_bot_token")
+        bot_token = credentials.get("access_token") or credentials.get(
+            "slack_bot_token"
+        )
         refresh_token = credentials.get("refresh_token")
         expires_at = credentials.get("expires_at")
 
@@ -574,7 +576,7 @@ class IntegrationService:
                 "provider": Provider.SLACK,
                 "credentials": {
                     **integration.credentials,
-                    "slack_bot_token": access_token,
+                    "access_token": access_token,
                     "refresh_token": refresh_token,
                     "expires_at": expires_at,
                 },

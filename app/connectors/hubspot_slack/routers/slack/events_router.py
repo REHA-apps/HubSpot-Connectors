@@ -13,7 +13,7 @@ from fastapi import (
 
 from app.core.dependencies import get_integration_service
 from app.core.exceptions import IntegrationNotFoundError
-from app.core.logging import get_corr_id, get_logger
+from app.core.logging import get_corr_id, get_logger, run_task_with_context
 from app.core.security.slack_signature import (
     slack_signature_required,
 )
@@ -130,6 +130,8 @@ async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
         )
 
         background_tasks.add_task(
+            run_task_with_context,
+            corr_id,
             messaging_service.handle_link_shared,
             workspace_id=workspace_id,
             channel=channel,
@@ -174,6 +176,8 @@ async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
                             slack_integration=integration,
                         )
                         background_tasks.add_task(
+                            run_task_with_context,
+                            corr_id,
                             messaging_service.handle_link_shared,
                             workspace_id=workspace_id,
                             channel=event.get("channel"),
@@ -212,6 +216,8 @@ async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
                 )
 
                 background_tasks.add_task(
+                    run_task_with_context,
+                    corr_id,
                     messaging_service.handle_threaded_reply,
                     workspace_id=integration.workspace_id,
                     channel=channel,
@@ -237,6 +243,8 @@ async def slack_events(  # noqa: PLR0911, PLR0912, PLR0915
                     slack_integration=integration,
                 )
                 background_tasks.add_task(
+                    run_task_with_context,
+                    corr_id,
                     messaging_service.handle_app_home_opened,
                     user_id=user_id,
                 )

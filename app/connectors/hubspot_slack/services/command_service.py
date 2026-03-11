@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks
 
-from app.core.logging import get_logger
+from app.core.logging import get_logger, run_task_with_context
 from app.domains.ai.service import AIService
 from app.domains.crm.hubspot.service import HubSpotService
 from app.domains.crm.integration_service import IntegrationService
@@ -83,7 +83,11 @@ class CommandService:
             command == "/hs" and query.lower().startswith("report")
         ):
             background_tasks.add_task(
-                self._send_report_command, workspace_id, response_url
+                run_task_with_context,
+                self.corr_id,
+                self._send_report_command,
+                workspace_id,
+                response_url,
             )
             return {"response_type": "ephemeral", "text": "Fetching reports..."}
 
@@ -102,6 +106,8 @@ class CommandService:
 
         # 3. Schedule in background
         background_tasks.add_task(
+            run_task_with_context,
+            self.corr_id,
             self.messaging_service.search_and_send,
             workspace_id,
             query,

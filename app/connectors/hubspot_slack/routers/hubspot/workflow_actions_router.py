@@ -85,6 +85,65 @@ async def handle_workflow_action(
         if resolved_id:
             target_id = resolved_id
 
+    # 4. For engagements (emails, calls, notes), fetch and append the body
+    # to provide context if not already present in message_text.
+    obj_type = payload.object.get("objectType")
+    obj_id = str(payload.object.get("objectId") or "")
+
+    if obj_type and obj_id:
+        # Map object types to engagement names
+        engagement_map = {
+            "0-49": "emails",
+            "0-48": "calls",
+            "0-9": "notes",
+            "email": "emails",
+            "call": "calls",
+            "note": "notes",
+        }
+        hs_type = engagement_map.get(obj_type.lower())
+        if hs_type:
+            try:
+                # Fetch full engagement properties (using specialized getters)
+                # However, get_object handles the v3 property mapping if we're careful.
+                # To be safest, we'll use the specific getters.
+                full_obj = None
+                if hs_type == "emails":
+                    full_obj = await integration_service.hubspot_service.get_email(
+                        workspace_id, obj_id
+                    )
+                elif hs_type == "calls":
+                    full_obj = await integration_service.hubspot_service.get_call(
+                        workspace_id, obj_id
+                    )
+                elif hs_type == "notes":
+                    full_obj = await integration_service.hubspot_service.get_note(
+                        workspace_id, obj_id
+                    )
+
+                if full_obj:
+                    props = full_obj.get("properties") or {}
+                    body = (
+                        props.get("hs_email_text")
+                        or props.get("hs_email_html")
+                        or props.get("hs_call_body")
+                        or props.get("hs_note_body")
+                        or ""
+                    )
+                    if body:
+                        # Truncate if extremely long
+                        display_body = body.strip()
+                        if len(display_body) > 1000:  # noqa: PLR2004
+                            display_body = display_body[:997] + "..."
+
+                        if message_text:
+                            message_text += f"\n\n*Included Details:*\n{display_body}"
+                        else:
+                            message_text = f"*Included Details:*\n{display_body}"
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch engagement body for workflow action: %s", e
+                )
+
     # Send message to Slack
     resp = await messaging_service.send_message(
         workspace_id=workspace_id,

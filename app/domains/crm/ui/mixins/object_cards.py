@@ -113,6 +113,12 @@ class ObjectCardsMixin(ComponentsMixin):
                     value=f"add_note:contact:{obj['id']}",
                     is_gated=not is_pro,
                 ),
+                CardAction(
+                    label="Add Task",
+                    action_type="modal",
+                    value=f"add_task:contact:{obj['id']}",
+                    is_gated=not is_pro,
+                ),
             ],
         )
 
@@ -156,6 +162,12 @@ class ObjectCardsMixin(ComponentsMixin):
                     label="Reassign Owner",
                     action_type="modal",
                     value=f"reassign_owner:contact:{obj['id']}",
+                    is_gated=not is_pro,
+                ),
+                CardAction(
+                    label="Add Task",
+                    action_type="modal",
+                    value=f"add_task:contact:{obj['id']}",
                     is_gated=not is_pro,
                 ),
             ],
@@ -232,6 +244,12 @@ class ObjectCardsMixin(ComponentsMixin):
                             value=f"add_note:company:{obj['id']}",
                             is_gated=not is_pro,
                         ),
+                        CardAction(
+                            label="Add Task",
+                            action_type="modal",
+                            value=f"add_task:company:{obj['id']}",
+                            is_gated=not is_pro,
+                        ),
                     ]
                     if include_actions
                     else []
@@ -300,6 +318,13 @@ class ObjectCardsMixin(ComponentsMixin):
                 label="Add Note",
                 action_type="modal",
                 value=f"add_note:deal:{obj['id']}",
+                is_gated=not is_pro,
+            ),
+            CardAction(
+                label="Add Task",
+                action_type="modal",
+                value=f"add_task:deal:{obj['id']}",
+                is_gated=not is_pro,
             ),
         ]
 
@@ -318,9 +343,9 @@ class ObjectCardsMixin(ComponentsMixin):
             actions.extend(
                 [
                     CardAction(
-                        label="Update Lead Type",
+                        label="Update Deal Type",
                         action_type="modal",
-                        value=f"update_lead_type:{obj['id']}",
+                        value=f"update_deal_type:{obj['id']}",
                         is_gated=not is_pro,
                     ),
                     CardAction(
@@ -492,12 +517,6 @@ class ObjectCardsMixin(ComponentsMixin):
                     value="open_hubspot",
                     url=obj.get("hs_url", "https://app.hubspot.com"),
                 ),
-                CardAction(
-                    label="Add Note",
-                    action_type="modal",
-                    value=f"add_note:task:{obj['id']}",
-                    is_gated=not is_pro,
-                ),
             ],
         )
 
@@ -590,30 +609,89 @@ class ObjectCardsMixin(ComponentsMixin):
             ],
         )
 
+    def build_engagement(
+        self,
+        obj: Mapping[str, Any],
+        analysis: AIEngagementAnalysis,
+        is_pro: bool = False,
+    ) -> UnifiedCard:
+        """Builds a UnifiedCard for a HubSpot Engagement (note, call, email, etc)."""
+        props = obj.get("properties") or {}
+        etype = analysis.engagement_type.title()
+
+        date_str = "No Date"
+        ts = props.get("hs_timestamp")
+        if ts:
+            try:
+                dt = datetime.fromtimestamp(int(ts) / 1000)
+                date_str = dt.strftime("%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                pass
+
+        emoji = (
+            "📝"
+            if etype.lower() == "note"
+            else "☎️"
+            if etype.lower() == "call"
+            else "📧"
+            if etype.lower() == "email"
+            else "🤝"
+        )
+
+        return UnifiedCard(
+            title=f"{etype} Logged",
+            subtitle=f"Engagement • {etype}",
+            emoji=emoji,
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
+            metrics=[
+                ("Type", etype),
+                ("Date", date_str),
+            ],
+            content=analysis.summary,
+            secondary_content=[
+                ("Next Action", analysis.next_action),
+            ],
+            actions=[
+                CardAction(
+                    label="Open in HubSpot",
+                    action_type="url",
+                    value="open_hubspot",
+                    url=obj.get("hs_url", "https://app.hubspot.com"),
+                ),
+            ],
+        )
+
     def _build_from_legacy_heuristics(
         self,
         obj: Mapping[str, Any],
         analysis: Any,
+        is_pro: bool = False,
     ) -> UnifiedCard:
         props = obj.get("properties", {})
 
         if "dealname" in props:
-            return self.build_deal(obj, cast(AIDealAnalysis, analysis))
+            return self.build_deal(obj, cast(AIDealAnalysis, analysis), is_pro=is_pro)
 
         if "domain" in props:
-            return self.build_company(obj, cast(AICompanyAnalysis, analysis))
+            return self.build_company(
+                obj, cast(AICompanyAnalysis, analysis), is_pro=is_pro
+            )
 
         if "subject" in props:
-            return self.build_ticket(obj, cast(AITicketAnalysis, analysis))
+            return self.build_ticket(
+                obj, cast(AITicketAnalysis, analysis), is_pro=is_pro
+            )
 
         if "hs_task_subject" in props:
-            return self.build_task(obj, cast(AITaskAnalysis, analysis))
+            return self.build_task(obj, cast(AITaskAnalysis, analysis), is_pro=is_pro)
 
         lifecycle = (props.get("lifecyclestage") or "").lower()
         if lifecycle == "lead":
-            return self.build_lead(obj, cast(AIContactAnalysis, analysis))
+            return self.build_lead(
+                obj, cast(AIContactAnalysis, analysis), is_pro=is_pro
+            )
 
-        return self.build_contact(obj, cast(AIContactAnalysis, analysis))
+        return self.build_contact(obj, cast(AIContactAnalysis, analysis), is_pro=is_pro)
 
     def build(
         self,
@@ -641,7 +719,9 @@ class ObjectCardsMixin(ComponentsMixin):
             )
 
         if obj_type == "task":
-            return self.build_task(obj, cast(AITaskAnalysis, analysis), task_context)
+            return self.build_task(
+                obj, cast(AITaskAnalysis, analysis), task_context, is_pro=is_pro
+            )
 
         # Dispatch registry
         registry = {
@@ -656,6 +736,15 @@ class ObjectCardsMixin(ComponentsMixin):
             "0-18": self.build_communication,
             "appointment": self.build_appointment,
             "0-421": self.build_appointment,
+            "note": self.build_engagement,
+            "0-9": self.build_engagement,
+            "call": self.build_engagement,
+            "0-48": self.build_engagement,
+            "email": self.build_engagement,
+            "0-49": self.build_engagement,
+            "meeting": self.build_engagement,
+            "0-47": self.build_engagement,
+            "0-46": self.build_engagement,
         }
 
         builder = registry.get(obj_type)
@@ -669,4 +758,4 @@ class ObjectCardsMixin(ComponentsMixin):
             return builder(obj, cast(Any, analysis))
 
         # Legacy heuristics fallback
-        return self._build_from_legacy_heuristics(obj, analysis)
+        return self._build_from_legacy_heuristics(obj, analysis, is_pro=is_pro)

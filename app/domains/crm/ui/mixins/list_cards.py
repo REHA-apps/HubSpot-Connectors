@@ -10,7 +10,7 @@ MAX_OWNERS_DISPLAY = 100
 
 
 class ListCardsMixin(ComponentsMixin):
-    def build_deals_list(self, deals: list[dict]) -> UnifiedCard:
+    def build_deals_list(self, deals: list[dict], is_pro: bool = False) -> UnifiedCard:
         """Build a card showing a list of associated deals."""
         content_parts = []
         display_deals = deals[:25]
@@ -27,10 +27,13 @@ class ListCardsMixin(ComponentsMixin):
         return UnifiedCard(
             title="Associated Deals",
             emoji="💰",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
             content="\n\n".join(content_parts) if content_parts else "No deals found.",
         )
 
-    def build_contacts_list(self, contacts: list[dict]) -> UnifiedCard:
+    def build_contacts_list(
+        self, contacts: list[dict], is_pro: bool = False
+    ) -> UnifiedCard:
         """Build a card showing a list of associated contacts."""
         content_parts = []
         display_contacts = contacts[:25]
@@ -49,12 +52,15 @@ class ListCardsMixin(ComponentsMixin):
         return UnifiedCard(
             title="Associated Contacts",
             emoji="👥",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
             content="\n\n".join(content_parts)
             if content_parts
             else "No contacts found.",
         )
 
-    def build_meetings_list(self, meetings: list[dict]) -> UnifiedCard:
+    def build_meetings_list(
+        self, meetings: list[dict], is_pro: bool = False
+    ) -> UnifiedCard:
         """Build a card showing a list of associated meetings."""
         content_parts = []
         display_meetings = meetings[:25]
@@ -80,6 +86,7 @@ class ListCardsMixin(ComponentsMixin):
         return UnifiedCard(
             title="Associated Meetings",
             emoji="📅",
+            badge="FREE VERSION" if not is_pro else "PRO TIER",
             content="\n\n".join(content_parts)
             if content_parts
             else "No meetings found.",

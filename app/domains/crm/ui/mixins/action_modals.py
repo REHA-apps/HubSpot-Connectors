@@ -111,32 +111,26 @@ class ActionModalsMixin(ComponentsMixin):
             ],
         }
 
-    def build_update_lead_type_modal(
+    def build_update_deal_type_modal(
         self, deal_id: str, current_value: str = "", metadata: str | None = None
     ) -> dict:
-        """Builds the Slack Modal for updating a deal's Lead Type."""
+        """Builds the Slack Modal for updating a deal's Deal Type."""
         return {
             "type": "modal",
-            "callback_id": "update_lead_type_modal",
+            "callback_id": "update_deal_type_modal",
             "private_metadata": metadata or deal_id,
-            "title": {"type": "plain_text", "text": "Update Lead Type"},
+            "title": {"type": "plain_text", "text": "Update Deal Type"},
             "submit": {"type": "plain_text", "text": "Update"},
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": [
-                {
-                    "type": "input",
-                    "block_id": "lead_type_block",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "lead_type_input",
-                        "initial_value": current_value,
-                        "placeholder": {
-                            "type": "plain_text",
-                            "text": "e.g. New Business, Renewal, etc.",
-                        },
-                    },
-                    "label": {"type": "plain_text", "text": "Lead Type"},
-                },
+                self._select(
+                    "Deal Type",
+                    "deal_type_input",
+                    [
+                        ("New Business", "newbusiness"),
+                        ("Existing Business", "existingbusiness"),
+                    ],
+                )
             ],
         }
 
@@ -166,6 +160,67 @@ class ActionModalsMixin(ComponentsMixin):
                     },
                     "label": {"type": "plain_text", "text": "Note Content"},
                 }
+            ],
+        }
+
+    def build_add_task_modal(
+        self, object_type: str, object_id: str, metadata: str | None = None
+    ) -> dict:
+        """Builds the Slack Modal for creating a new Task in HubSpot."""
+        return {
+            "type": "modal",
+            "callback_id": "add_task_modal",
+            "private_metadata": metadata or f"{object_type}:{object_id}",
+            "title": {"type": "plain_text", "text": "Create Task"},
+            "submit": {"type": "plain_text", "text": "Create"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "task_subject_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "hs_task_subject",
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Task title or subject",
+                        },
+                    },
+                    "label": {"type": "plain_text", "text": "Subject"},
+                },
+                {
+                    "type": "input",
+                    "block_id": "task_body_block",
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "hs_task_body",
+                        "multiline": True,
+                        "placeholder": {
+                            "type": "plain_text",
+                            "text": "Detailed description of the task...",
+                        },
+                    },
+                    "label": {"type": "plain_text", "text": "Notes / Body"},
+                    "optional": True,
+                },
+                self._select(
+                    "Task Type",
+                    "hs_task_type",
+                    [
+                        ("To-Do", "TODO"),
+                        ("Call", "CALL"),
+                        ("Email", "EMAIL"),
+                    ],
+                ),
+                self._select(
+                    "Priority",
+                    "hs_task_priority",
+                    [
+                        ("Low", "LOW"),
+                        ("Medium", "MEDIUM"),
+                        ("High", "HIGH"),
+                    ],
+                ),
             ],
         }
 

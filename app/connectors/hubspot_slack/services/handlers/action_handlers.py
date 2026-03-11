@@ -32,11 +32,13 @@ class ActionButtonHandler(InteractionHandler):
         context: InteractionContext,
         **kwargs: Any,
     ) -> None:
-        value = context.value or ""
+        # Extract deal_id from either action_id (select menus) or value (buttons)
+        # For select menus, context is in action_id. For buttons, it's in value.
+        action_context = context.action_id or context.value or ""
         channel_id = context.channel_id
-        parts = value.split(":")
+        parts = action_context.split(":")
         if len(parts) < 2:
-            logger.warning("Malformed update_deal_stage value=%s", value)
+            logger.warning("Malformed update_deal_stage context=%s", action_context)
             return
         deal_id = parts[1]
         actions = payload.get("actions", [])
@@ -68,7 +70,7 @@ class ActionButtonHandler(InteractionHandler):
                     deal_id, new_stage_id, metadata=metadata
                 )
                 await messaging_service.integration_service.slack_channel.open_view(
-                    bot_token=integration.credentials["slack_bot_token"],
+                    bot_token=integration.slack_bot_token,
                     trigger_id=context.trigger_id,
                     view=modal,
                 )
@@ -78,7 +80,7 @@ class ActionButtonHandler(InteractionHandler):
                     deal_id, new_stage_id, metadata=metadata
                 )
                 await messaging_service.integration_service.slack_channel.open_view(
-                    bot_token=integration.credentials["slack_bot_token"],
+                    bot_token=integration.slack_bot_token,
                     trigger_id=context.trigger_id,
                     view=modal,
                 )
@@ -261,7 +263,7 @@ class ActionButtonHandler(InteractionHandler):
         modal = builder.build_upgrade_nudge_modal(feature_name=feature_id)
         slack_channel = messaging_service.integration_service.slack_channel
         await slack_channel.open_view(
-            bot_token=integration.credentials["slack_bot_token"],
+            bot_token=integration.slack_bot_token,
             trigger_id=trigger_id,
             view=modal,
         )

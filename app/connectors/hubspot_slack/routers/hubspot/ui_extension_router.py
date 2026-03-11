@@ -63,6 +63,20 @@ async def get_insight(
     if not obj:
         raise HTTPException(status_code=404, detail="Object not found")
 
+    # Fetch owner name if it exists
+    owner_name = None
+    owner_id = obj.get("properties", {}).get("hubspot_owner_id")
+    if owner_id:
+        try:
+            owners = await hubspot.get_owners(workspace_id)
+            owner = next((o for o in owners if str(o["id"]) == str(owner_id)), None)
+            if owner:
+                owner_name = (
+                    f"{owner.get('firstName', '')} {owner.get('lastName', '')}".strip()
+                )
+        except Exception:
+            logger.warning("Failed to fetch owner for record %s", object_id)
+
     analysis = await ai.analyze_polymorphic(
         obj,
         hs_object_type,
@@ -70,6 +84,7 @@ async def get_insight(
         engagements=None,
         # Shown via CrmAssociationTable — excluded from AI text
         associated_objects=None,
+        owner_name=owner_name,
     )
 
     unified_card = CardBuilder().build(obj, cast(Any, analysis), is_pro=is_pro)

@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
-
-from slack_sdk.web.async_client import AsyncWebClient
 
 from app.connectors.hubspot_slack.ui.modal_builder import ModalBuilder
 from app.core.logging import get_logger
@@ -40,7 +39,6 @@ class ModalHandler(InteractionHandler):
         object_type = metadata.object_type
         object_id = metadata.object_id
         channel_id = metadata.channel_id
-        response_url = metadata.response_url
         if not object_type or not object_id:
             logger.warning("Missing object context in metadata")
             return
@@ -80,14 +78,8 @@ class ModalHandler(InteractionHandler):
             )
         user_id = context.user_id
         msg = "✅ Note successfully logged to HubSpot!"
-        if response_url:
-            await messaging_service.send_via_response_url(
-                response_url=response_url, text=msg
-            )
-        elif channel_id and user_id:
-            client = AsyncWebClient(
-                token=integration.credentials.get("slack_bot_token")
-            )
+        if channel_id and user_id:
+            client = await self.integration_service.get_slack_client(integration)
             try:
                 await client.chat_postEphemeral(
                     channel=str(channel_id), user=user_id, text=msg
@@ -96,8 +88,113 @@ class ModalHandler(InteractionHandler):
                 pass
         return
 
-    @interaction_handler("update_lead_type_modal")
-    async def _handle_update_lead_type_submission(
+    @interaction_handler("add_task_modal")
+    async def _handle_add_task_submission(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        integration: IntegrationRecord,
+        messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        **kwargs: Any,
+    ) -> None:
+        view = payload.get("view", {})
+        metadata = self._parse_modal_metadata(view.get("private_metadata", ""))
+        object_type = metadata.object_type
+        object_id = metadata.object_id
+        channel_id = metadata.channel_id
+        response_url = metadata.response_url
+        if not object_type or not object_id:
+            logger.warning("Missing object context in metadata")
+            return
+        values = view.get("state", {}).get("values", {})
+
+        subject = ""
+        body = ""
+        task_type = "TODO"
+        priority = "NONE"
+
+        for block_id, actions in values.items():
+            if "hs_task_subject" in actions:
+                subject = actions["hs_task_subject"].get("value", "")
+            if "hs_task_body" in actions:
+                body = str(actions["hs_task_body"].get("value") or "")
+            if "hs_task_type" in actions:
+                task_type = (
+                    actions["hs_task_type"]
+                    .get("selected_option", {})
+                    .get("value", "TODO")
+                )
+            if "hs_task_priority" in actions:
+                priority = (
+                    actions["hs_task_priority"]
+                    .get("selected_option", {})
+                    .get("value", "NONE")
+                )
+
+        if not subject:
+            logger.warning("Empty task subject submitted")
+            return
+
+        async with slack_error_handling(
+            "create Task",
+            payload,
+            messaging_service,
+            response_url=response_url,
+        ):
+            # 1. Create task
+            task = await self.hubspot.create_task(
+                workspace_id=integration.workspace_id,
+                properties={
+                    "hs_task_subject": subject,
+                    "hs_task_body": body,
+                    "hs_task_type": task_type,
+                    "hs_task_priority": priority,
+                    "hs_task_status": "WAITING",
+                    "hs_timestamp": int(datetime.now(UTC).timestamp() * 1000),
+                },
+            )
+            # 2. Associate task with object
+            task_id = str(task["id"])
+            await self.hubspot.associate_object(
+                workspace_id=integration.workspace_id,
+                from_type="task",
+                from_id=task_id,
+                to_type=object_type,
+                to_id=object_id,
+            )
+
+            # 3. Publish to feed if possible
+            try:
+                sender_name = str(payload.get("user", {}).get("name", "Slack User"))
+                await self.hubspot.publish_app_event(
+                    workspace_id=integration.workspace_id,
+                    event_template_id="slack-message-sent",
+                    object_type=object_type,
+                    object_id=object_id,
+                    properties={
+                        "message_body": f"Task created: {subject}",
+                        "channel_name": f"<#{channel_id}>" if channel_id else "DM",
+                        "sender_name": sender_name,
+                    },
+                )
+            except Exception as e:
+                logger.warning("Failed to publish custom timeline event: %s", e)
+
+            user_id = context.user_id
+            msg = f"✅ Task '{subject}' successfully created in HubSpot!"
+            if channel_id and user_id:
+                client = await self.integration_service.get_slack_client(integration)
+                try:
+                    await client.chat_postEphemeral(
+                        channel=str(channel_id), user=user_id, text=msg
+                    )
+                except Exception:
+                    pass
+        return
+
+    @interaction_handler("update_deal_type_modal")
+    async def _handle_update_deal_type_submission(
         self,
         *,
         payload: Mapping[str, Any],
@@ -112,16 +209,18 @@ class ModalHandler(InteractionHandler):
         channel_id = metadata.channel_id
         response_url = metadata.response_url
         values = view.get("state", {}).get("values", {})
-        lead_type = ""
+        deal_type = ""
         for block in values.values():
-            if "lead_type_input" in block:
-                lead_type = block["lead_type_input"].get("value", "")
+            if "deal_type_input" in block:
+                deal_type = (
+                    block["deal_type_input"].get("selected_option", {}).get("value", "")
+                )
                 break
         if not deal_id:
-            logger.warning("Missing deal_id in metadata for update_lead_type_modal")
+            logger.warning("Missing deal_id in metadata for update_deal_type_modal")
             return
         async with slack_error_handling(
-            "update Lead Type",
+            "update Deal Type",
             payload,
             messaging_service,
             response_url=response_url,
@@ -129,10 +228,10 @@ class ModalHandler(InteractionHandler):
             await self.hubspot.update_deal(
                 workspace_id=integration.workspace_id,
                 deal_id=deal_id,
-                properties={"hs_lead_type": lead_type},
+                properties={"dealtype": deal_type},
             )
             user_id = context.user_id
-            msg = "✅ Lead Type updated for deal!"
+            msg = "✅ Deal Type updated for deal!"
             if response_url:
                 await messaging_service.send_via_response_url(
                     response_url=response_url, text=msg
@@ -499,24 +598,18 @@ class ModalHandler(InteractionHandler):
                     response_url=response_url, text=msg
                 )
             elif channel_id and user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
+                client = await self.integration_service.get_slack_client(integration)
                 await client.chat_postEphemeral(
                     channel=str(channel_id), user=user_id, text=msg
                 )
             elif user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
+                client = await self.integration_service.get_slack_client(integration)
                 await client.chat_postMessage(channel=user_id, text=msg)
         except Exception as exc:
             logger.exception("Failed to create object: %s")
             user_id = context.user_id
             if user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
+                client = await self.integration_service.get_slack_client(integration)
                 await client.chat_postMessage(
                     channel=user_id,
                     text=f"❌ Failed to create {object_type}: {str(exc)}",
@@ -594,7 +687,7 @@ class ModalHandler(InteractionHandler):
             )
             slack_channel = messaging_service.integration_service.slack_channel
             await slack_channel.open_view(
-                bot_token=integration.credentials["slack_bot_token"],
+                bot_token=integration.slack_bot_token,
                 trigger_id=trigger_id,
                 view=modal,
             )
@@ -610,8 +703,8 @@ class ModalHandler(InteractionHandler):
             else:
                 user_id = str(kwargs.get("payload", {}).get("user", {}).get("id", ""))
                 if user_id:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
+                    client = await self.integration_service.get_slack_client(
+                        integration
                     )
                     error_msg = f"❌ Failed to open note modal: {str(exc)}"
                     channel_id = context.channel_id
@@ -627,8 +720,76 @@ class ModalHandler(InteractionHandler):
                         except Exception:
                             pass
 
-    @interaction_handler("open_update_lead_type_modal")
-    async def _handle_open_update_lead_type_modal(
+    @interaction_handler("open_add_task_modal")
+    async def _handle_open_add_task_modal(
+        self,
+        value: str,
+        integration: IntegrationRecord,
+        messaging_service: SlackMessagingService,
+        context: InteractionContext,
+        trigger_id: str | None,
+        **kwargs: Any,
+    ) -> None:
+        parts = value.split(":")
+        if len(parts) < 3:
+            logger.warning("Malformed add_task value=%s", value)
+            return
+        obj_type = parts[1]
+        object_id = parts[2]
+        if not trigger_id:
+            logger.error("Missing trigger_id for modal")
+            return
+        try:
+            channel_id = context.channel_id
+            response_url = context.response_url
+            metadata = json.dumps(
+                {
+                    "object_type": obj_type,
+                    "object_id": object_id,
+                    "channel_id": channel_id,
+                    "response_url": response_url,
+                }
+            )
+            modal = messaging_service.cards.build_add_task_modal(
+                obj_type, object_id, metadata=metadata
+            )
+            slack_channel = messaging_service.integration_service.slack_channel
+            await slack_channel.open_view(
+                bot_token=integration.slack_bot_token,
+                trigger_id=trigger_id,
+                view=modal,
+            )
+            logger.info("Opened add_task modal for object_id=%s", object_id)
+        except Exception as exc:
+            logger.exception("Failed to open add task modal: %s")
+            response_url = context.response_url
+            if response_url:
+                await messaging_service.send_via_response_url(
+                    response_url=response_url,
+                    text=f"❌ Failed to open task modal: {str(exc)}",
+                )
+            else:
+                user_id = str(kwargs.get("payload", {}).get("user", {}).get("id", ""))
+                if user_id:
+                    client = await self.integration_service.get_slack_client(
+                        integration
+                    )
+                    error_msg = f"❌ Failed to open task modal: {str(exc)}"
+                    channel_id = context.channel_id
+                    if channel_id:
+                        await client.chat_postEphemeral(
+                            channel=str(channel_id), user=user_id, text=error_msg
+                        )
+                    else:
+                        try:
+                            await client.chat_postMessage(
+                                channel=user_id, text=error_msg
+                            )
+                        except Exception:
+                            pass
+
+    @interaction_handler("open_update_deal_type_modal")
+    async def _handle_open_update_deal_type_modal(
         self,
         value: str,
         integration: IntegrationRecord,
@@ -639,7 +800,7 @@ class ModalHandler(InteractionHandler):
     ) -> None:
         parts = value.split(":")
         if len(parts) < 2:
-            logger.warning("Malformed update_lead_type value=%s", value)
+            logger.warning("Malformed update_deal_type value=%s", value)
             return
         deal_id = parts[1]
         if not trigger_id:
@@ -650,21 +811,21 @@ class ModalHandler(InteractionHandler):
                 workspace_id=integration.workspace_id, object_id=deal_id
             )
             current_value = (
-                (deal.get("properties") or {}).get("hs_lead_type", "") if deal else ""
+                (deal.get("properties") or {}).get("dealtype", "") if deal else ""
             )
-            modal = messaging_service.cards.build_update_lead_type_modal(
+            modal = messaging_service.cards.build_update_deal_type_modal(
                 deal_id, current_value
             )
             if view_id:
                 await self._update_modal(
-                    view_id, modal, "Update Lead Type", integration
+                    view_id, modal, "Update Deal Type", integration
                 )
             else:
                 await self._open_modal(
-                    trigger_id, modal, "Update Lead Type", integration
+                    trigger_id, modal, "Update Deal Type", integration
                 )
         except Exception:
-            logger.exception("Failed to open lead type modal: %s")
+            logger.exception("Failed to open deal type modal: %s")
 
     @interaction_handler("reassign_owner")
     async def _handle_open_reassign_modal(
@@ -880,8 +1041,8 @@ class ModalHandler(InteractionHandler):
                         text=f"No Slack thread found for {obj_type} {obj_id} to recap.",
                     )
                 else:
-                    client = AsyncWebClient(
-                        token=integration.credentials["slack_bot_token"]
+                    client = await self.integration_service.get_slack_client(
+                        integration
                     )
                     await client.chat_postMessage(
                         channel=kwargs.get("payload", {}).get("user", {}).get("id", ""),
@@ -914,7 +1075,7 @@ class ModalHandler(InteractionHandler):
                 await self._update_modal(view_id, modal, "AI Recap Review", integration)
             else:
                 await slack_channel.open_view(
-                    bot_token=integration.credentials["slack_bot_token"],
+                    bot_token=integration.slack_bot_token,
                     trigger_id=trigger_id,
                     view=modal,
                 )
@@ -942,7 +1103,7 @@ class ModalHandler(InteractionHandler):
         if not trigger_id:
             logger.error("Missing trigger_id for opening modal: %s", title)
             return None
-        bot_token = integration.credentials.get("slack_bot_token")
+        bot_token = integration.slack_bot_token
         if not bot_token:
             logger.error("Missing bot token for opening modal")
             return None
@@ -1025,9 +1186,7 @@ class ModalHandler(InteractionHandler):
                     response_url=response_url, text=msg
                 )
             elif channel_id and user_id:
-                client = AsyncWebClient(
-                    token=integration.credentials.get("slack_bot_token")
-                )
+                client = await self.integration_service.get_slack_client(integration)
                 try:
                     await client.chat_postEphemeral(
                         channel=str(channel_id), user=user_id, text=msg
@@ -1044,8 +1203,8 @@ class ModalHandler(InteractionHandler):
                         response_url=response_url, text=error_msg
                     )
                 elif channel_id:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
+                    client = await self.integration_service.get_slack_client(
+                        integration
                     )
                     try:
                         await client.chat_postEphemeral(
@@ -1123,49 +1282,55 @@ class ModalHandler(InteractionHandler):
             user_id = context.user_id
             if user_id:
                 msg = f"✅ *Meeting Scheduled!* \n_{title}_ at `{date_str} {time_str}`"
+                success = False
                 if response_url:
-                    await messaging_service.send_via_response_url(
+                    success = await messaging_service.send_via_response_url(
                         response_url=response_url, text=msg
                     )
-                elif channel_id:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
+                if not success:
+                    client = await self.integration_service.get_slack_client(
+                        integration
                     )
-                    await client.chat_postEphemeral(
-                        channel=str(channel_id), user=user_id, text=msg
-                    )
-                else:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
-                    )
-                    try:
-                        await client.chat_postMessage(channel=user_id, text=msg)
-                    except Exception:
-                        pass
+                    if channel_id:
+                        try:
+                            await client.chat_postEphemeral(
+                                channel=str(channel_id), user=user_id, text=msg
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            await client.chat_postMessage(channel=user_id, text=msg)
+                        except Exception:
+                            pass
         except Exception as exc:
             logger.exception("Failed to create meeting: %s")
             user_id = context.user_id
             if user_id:
                 error_msg = f"❌ Failed to schedule meeting: {str(exc)}"
+                success = False
                 if response_url:
-                    await messaging_service.send_via_response_url(
+                    success = await messaging_service.send_via_response_url(
                         response_url=response_url, text=error_msg
                     )
-                elif channel_id:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
+                if not success:
+                    client = await self.integration_service.get_slack_client(
+                        integration
                     )
-                    await client.chat_postEphemeral(
-                        channel=str(channel_id), user=user_id, text=error_msg
-                    )
-                else:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
-                    )
-                    try:
-                        await client.chat_postMessage(channel=user_id, text=error_msg)
-                    except Exception:
-                        pass
+                    if channel_id:
+                        try:
+                            await client.chat_postEphemeral(
+                                channel=str(channel_id), user=user_id, text=error_msg
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            await client.chat_postMessage(
+                                channel=user_id, text=error_msg
+                            )
+                        except Exception:
+                            pass
 
     async def _handle_task_submission(
         self,
@@ -1274,8 +1439,8 @@ class ModalHandler(InteractionHandler):
             logger.exception("Ticket submission failed: %s")
             if user_id:
                 try:
-                    client = AsyncWebClient(
-                        token=integration.credentials.get("slack_bot_token")
+                    client = await self.integration_service.get_slack_client(
+                        integration
                     )
                     await client.chat_postMessage(
                         channel=user_id, text=f"❌ Failed to create ticket: {str(exc)}"

@@ -126,7 +126,11 @@ class InteractionService:
         action_id = str(actions[0].get("action_id", "")) if actions else ""
 
         if not action_id.startswith(
-            ("open_add_note_modal", "open_schedule_meeting_modal")
+            (
+                "open_add_note_modal",
+                "open_schedule_meeting_modal",
+                "open_add_task_modal",
+            )
         ):
             return None
 
@@ -145,7 +149,7 @@ class InteractionService:
         if not integration:
             return None
 
-        bot_token = integration.credentials.get("slack_bot_token")
+        bot_token = integration.slack_bot_token
         if not bot_token:
             return None
 
@@ -195,6 +199,8 @@ class InteractionService:
 
         if action_id.startswith("open_add_note_modal"):
             modal = cards.build_note_modal(obj_type, object_id, metadata=metadata)
+        elif action_id.startswith("open_add_task_modal"):
+            modal = cards.build_add_task_modal(obj_type, object_id, metadata=metadata)
         else:
             modal = cards.build_meeting_modal(object_id, metadata=metadata)
 
@@ -227,7 +233,7 @@ class InteractionService:
         integration = await self.integration_service.get_integration_by_slack_team_id(
             team_id
         )
-        if not (integration and integration.credentials.get("slack_bot_token")):
+        if not (integration and integration.slack_bot_token):
             return None
 
         # Tier check for Pro actions (Create)

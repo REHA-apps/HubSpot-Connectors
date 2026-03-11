@@ -57,6 +57,7 @@ class HubSpotClient(BaseClient):
             "lifecyclestage",
             "hs_lead_status",
             "phone",
+            "hubspotscore",
         ],
         "companies": [
             "name",
@@ -240,7 +241,14 @@ class HubSpotClient(BaseClient):
             return None
 
         if response.status_code >= ErrorCode.BAD_REQUEST:
-            self.log.error("HubSpot error %s: %s", response.status_code, response.text)
+            if "timeline/events" in url and response.status_code >= 500:
+                self.log.warning(
+                    "HubSpot Timeline API error (ignored): %s", response.text
+                )
+            else:
+                self.log.error(
+                    "HubSpot error %s: %s", response.status_code, response.text
+                )
             response.raise_for_status()
 
         response.raise_for_status()
@@ -384,7 +392,7 @@ class HubSpotClient(BaseClient):
         }
 
         # Use the existing authenticated request wrapper
-        return await self.request("POST", "crm/v3/timeline/events", json=payload)
+        return await self.request("POST", "timeline/events", json=payload)
 
     async def get_object(
         self,
@@ -622,6 +630,52 @@ class HubSpotClient(BaseClient):
             ],
         )
 
+    async def get_note(self, object_id: str) -> dict[str, Any] | None:
+        return await self.get_object(
+            "notes",
+            object_id,
+            properties=[
+                "hs_note_body",
+                "hs_timestamp",
+            ],
+        )
+
+    async def get_call(self, object_id: str) -> dict[str, Any] | None:
+        return await self.get_object(
+            "calls",
+            object_id,
+            properties=[
+                "hs_call_title",
+                "hs_call_body",
+                "hs_call_status",
+                "hs_timestamp",
+            ],
+        )
+
+    async def get_email(self, object_id: str) -> dict[str, Any] | None:
+        return await self.get_object(
+            "emails",
+            object_id,
+            properties=[
+                "hs_email_subject",
+                "hs_email_text",
+                "hs_email_html",
+                "hs_timestamp",
+            ],
+        )
+
+    async def get_lead(self, object_id: str) -> dict[str, Any] | None:
+        return await self.get_object(
+            "leads",
+            object_id,
+            properties=[
+                "hs_lead_status",
+                "firstname",
+                "lastname",
+                "company",
+            ],
+        )
+
     async def get_owners(self) -> list[dict[str, Any]]:
         """Fetch all owners."""
         data = await self.request("GET", "owners")
@@ -769,7 +823,7 @@ class HubSpotClient(BaseClient):
             json=payload,
         )
 
-    async def get_meetings(
+    async def get_meeting(
         self,
         object_id: str,
         properties: list[str] | None = None,
@@ -786,6 +840,13 @@ class HubSpotClient(BaseClient):
                 "hs_meeting_outcome",
             ],
         )
+
+    async def get_meetings(
+        self,
+        object_id: str,
+        properties: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        return await self.get_meeting(object_id, properties)
 
     async def search_meetings(self, query: str) -> list[dict[str, Any]]:
         return await self.search_objects(

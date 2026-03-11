@@ -10,13 +10,14 @@ from app.core.dependencies import (
     get_workspace_id,
 )
 from app.core.exceptions import IntegrationNotFoundError
-from app.core.logging import get_corr_id
+from app.core.logging import get_corr_id, get_logger
 from app.domains.ai.service import AIService
 from app.domains.crm.hubspot.service import HubSpotService
 from app.domains.crm.integration_service import IntegrationService
 from app.domains.messaging.base import MessagingService
 
 router = APIRouter(prefix="/hubspot/actions", tags=["hubspot-actions"])
+logger = get_logger("hubspot.actions")
 
 
 @router.post("/send-ai-insights-to-slack")
@@ -57,11 +58,26 @@ async def send_ai_insights_to_slack(
         if not obj:
             raise HTTPException(404, f"Record not found for id {object_id}")
 
+        # Fetch owner name if it exists
+        owner_name = None
+        owner_id = obj.get("properties", {}).get("hubspot_owner_id")
+        if owner_id:
+            try:
+                owners = await hubspot.get_owners(workspace_id)
+                owner = next((o for o in owners if str(o["id"]) == str(owner_id)), None)
+                if owner:
+                    first = owner.get("firstName", "")
+                    last = owner.get("lastName", "")
+                    owner_name = f"{first} {last}".strip()
+            except Exception:
+                logger.warning("Failed to fetch owner for record %s", object_id)
+
         analysis = await ai.analyze_polymorphic(
             obj,
             hs_object_type,
             engagements=engagements,
             associated_objects=associated_objects,
+            owner_name=owner_name,
         )
 
         await messaging_service.send_ai_insights(

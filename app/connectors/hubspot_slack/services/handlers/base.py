@@ -224,7 +224,7 @@ class InteractionHandler(ABC):
         self, trigger_id: str, title: str, integration: IntegrationRecord
     ) -> str | None:
         """Opens a loading modal immediately to secure the trigger_id window."""
-        bot_token = integration.credentials.get("slack_bot_token")
+        bot_token = integration.slack_bot_token
         if not bot_token:
             return None
         try:
@@ -256,7 +256,7 @@ class InteractionHandler(ABC):
         integration: IntegrationRecord,
     ) -> bool:
         """Updates an existing Slack modal with final content."""
-        bot_token = integration.credentials.get("slack_bot_token")
+        bot_token = integration.slack_bot_token
         if not bot_token:
             return False
         try:
@@ -290,7 +290,7 @@ class InteractionHandler(ABC):
         if not trigger_id:
             logger.error("Missing trigger_id for opening modal: %s", title)
             return None
-        bot_token = integration.credentials.get("slack_bot_token")
+        bot_token = integration.slack_bot_token
         if not bot_token:
             logger.error("Missing bot token for opening modal")
             return None

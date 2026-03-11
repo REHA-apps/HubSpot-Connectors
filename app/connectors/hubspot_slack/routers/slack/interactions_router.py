@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
 
 from app.connectors.hubspot_slack.services.service import InteractionService
 from app.core.dependencies import get_integration_service
-from app.core.logging import get_corr_id, get_logger
+from app.core.logging import get_corr_id, get_logger, run_task_with_context
 from app.core.security.slack_signature import slack_signature_required
 from app.domains.crm.integration_service import IntegrationService
 from app.utils.constants import ErrorCode
@@ -86,7 +85,7 @@ async def slack_interactions(
     )
 
     background_tasks.add_task(
-        _run_task_with_context,
+        run_task_with_context,
         corr_id,
         interaction_svc.handle_interaction,
         payload,
@@ -102,11 +101,3 @@ async def slack_interactions(
         )
 
     return Response(status_code=200)
-
-
-async def _run_task_with_context(corr_id: str, func: Callable, *args, **kwargs):
-    """Wraps a background task in log_context to maintain correlation IDs."""
-    from app.core.logging import log_context
-
-    with log_context(corr_id):
-        await func(*args, **kwargs)

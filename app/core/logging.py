@@ -53,6 +53,16 @@ def log_context(corr_id: str):
         corr_id_ctx.reset(token)
 
 
+async def run_task_with_context(
+    corr_id: str, func: Any, *args: Any, **kwargs: Any
+) -> None:
+    """Description:
+    Wraps a background task in log_context to maintain correlation IDs.
+    """
+    with log_context(corr_id):
+        await func(*args, **kwargs)
+
+
 class ContextFilter(logging.Filter):
     """Description:
     Logging filter that injects the current correlation ID from contextvars

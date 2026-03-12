@@ -4,13 +4,33 @@ services:
     env: docker
     plan: free # Change to starter later to remove the 15m sleep
     region: oregon # Or your preferred region
-    healthCheckPath: /healthz
+    healthCheckPath: /api/health
     envVars:
-      - key: DATABASE_URL
-        sync: false # You will paste your Supabase URL in the Render UI
+      - key: ENV
+        value: prod
+      - key: SUPABASE_URL
+        sync: false # Set in Render UI
+      - key: SUPABASE_KEY
+        sync: false
+      - key: HUBSPOT_CLIENT_ID
+        sync: false
       - key: HUBSPOT_CLIENT_SECRET
+        sync: false
+      - key: HUBSPOT_APP_ID
+        sync: false
+      - key: HUBSPOT_REDIRECT_URI
+        sync: false
+      - key: SLACK_CLIENT_ID
+        sync: false
+      - key: SLACK_CLIENT_SECRET
+        sync: false
+      - key: SLACK_REDIRECT_URI
         sync: false
       - key: SLACK_SIGNING_SECRET
         sync: false
+      - key: API_BASE_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
       - key: PORT
-        value: 80 # Nginx will listen here
+        value: 10000 # Render default, although Dockerfile is EXPOSE 8000

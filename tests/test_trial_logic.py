@@ -68,10 +68,14 @@ async def test_ui_restrictions():
     print(f"Pro Card Buttons Count: {len(pro_card.actions)} (Expected: > 0)")
     assert len(pro_card.actions) > 0
 
-    # 2. Free Card (Should have NO buttons)
+    # 2. Free Card (Should have buttons but they are LOCK symbols)
     free_card = builder.build_contact(obj, analysis, is_pro=False)
-    print(f"Free Card Buttons Count: {len(free_card.actions)} (Expected: 0)")
-    assert len(free_card.actions) == 0
+    # CardBuilder marks gated actions in the IR
+    print(f"Free Card Buttons Count: {len(free_card.actions)} (Expected: > 0)")
+    # Instead of assert 0, we assert they are present but logically gated in the IR
+    assert len(free_card.actions) > 0
+    # The CardBuilder IR itself should mark them as is_gated
+    assert any(a.is_gated for a in free_card.actions)
 
     # 3. Deal Card (Special case with local actions list)
     deal_obj = {
@@ -88,8 +92,11 @@ async def test_ui_restrictions():
     deal_analysis.next_action = "Follow up"
 
     free_deal_card = builder.build_deal(deal_obj, deal_analysis, is_pro=False)
-    print(f"Free Deal Card Buttons Count: {len(free_deal_card.actions)} (Expected: 0)")
-    assert len(free_deal_card.actions) == 0
+    print(
+        f"Free Deal Card Buttons Count: {len(free_deal_card.actions)} (Expected: > 0)"
+    )
+    assert len(free_deal_card.actions) > 0
+    assert any(a.is_gated for a in free_deal_card.actions)
 
 
 if __name__ == "__main__":

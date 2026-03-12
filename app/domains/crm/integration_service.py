@@ -576,7 +576,7 @@ class IntegrationService:
                 "provider": Provider.SLACK,
                 "credentials": {
                     **integration.credentials,
-                    "access_token": access_token,
+                    "slack_bot_token": access_token,
                     "refresh_token": refresh_token,
                     "expires_at": expires_at,
                 },

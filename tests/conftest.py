@@ -1,23 +1,25 @@
+# tests/conftest.py
+import uuid
+
 import pytest
-from datetime import datetime, timezone
-from typing import Dict, Any
+
+from app.domains.crm.integration_service import IntegrationService
+
 
 @pytest.fixture
-def mock_contact_data() -> Dict[str, Any]:
-    """Provides a standard mock HubSpot contact object."""
+def corr_id():
+    return f"test_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture
+def slack_integration():
+    """Legacy fixture - returning dict for compatibility if used."""
     return {
-        "id": "12345",
-        "properties": {
-            "email": "test@example.com",
-            "firstname": "John",
-            "lastname": "Doe",
-            "company": "Test Corp",
-            "hs_analytics_num_visits": "10",
-            "lifecyclestage": "subscriber"
-        }
+        "slack_bot_token": "xoxb-test-token",
+        "default_channel": "#general",
     }
 
+
 @pytest.fixture
-def sample_datetime() -> datetime:
-    """Provides a fixed datetime object for consistent timestamp testing."""
-    return datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+def integration_service(corr_id):
+    return IntegrationService(corr_id)

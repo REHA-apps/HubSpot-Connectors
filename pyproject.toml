@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "crm-connectors"
+name = "reha-connect"
 version = "0.1.0"
-description = "HubSpot Connector Platform for Slack"
+description = "REHA Connect: HubSpot Connector Platform for Slack"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
-    {name = "User", email = "user@example.com"},
+    {name = "REHA Apps", email = "rehaapps.se@gmail.com"},
 ]
 dependencies = [
     "fastapi>=0.115.0",
@@ -20,15 +20,41 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "supabase>=2.12.0",
     "uvicorn[standard]>=0.30.0",
-    "tenacity>=8.0.0",
     "python-multipart",
+    "slack-sdk>=3.40.0",
+    "stripe>=14.4.0",
+    "aiohttp>=3.13.3",
+    "starlette",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
+    "pre-commit>=4.5.1",
+    "ruff>=0.9.0",
     "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
+    "pyright>=1.1.389",
+    "respx>=0.22.0",
+    "pytest-asyncio>=1.3.0",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "PL", "D"]
+ignore = ["D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107", "D203", "D213", "D205", "D400", "D401", "D415", "D417", "PLC0415", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004"]
+
+[tool.uv]
+managed = true
+
+[tool.ruff.lint.pylint]
+max-args = 8
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]

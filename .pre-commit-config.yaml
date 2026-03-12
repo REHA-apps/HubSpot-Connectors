@@ -1,75 +1,54 @@
-repos:
-- repo: https://github.com/astral-sh/ruff-pre-commit
-  # Ruff version.
-  rev: v0.11.7
-  hooks:
-    # Run the formatter.
-    - id: ruff
-    - id: ruff-format
+exclude: |
+  (^\.venv/)|
+  (^dist/)|
+  (^build/)|
+  (^node_modules/)|
+  (^logs/)|
+  (__pycache__)|
+  (\.pytest_cache)
+default_install_hook_types: [pre-commit, commit-msg]
 
 repos:
+  # 1. Protection for your main branches & security
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+    rev: v5.0.0
     hooks:
-      - id: check-added-large-files # prevents giant files from being committed.
-      - id: check-case-conflict # checks for files that would conflict in case-insensitive filesystems.
-      - id: check-merge-conflict # checks for files that contain merge conflict strings.
-      - id: check-yaml # checks yaml files for parseable syntax.
-      - id: detect-private-key # detects the presence of private keys.
-      - id: end-of-file-fixer # ensures that a file is either empty, or ends with one newline.
-      - id: fix-byte-order-marker # removes utf-8 byte order marker.
-      - id: mixed-line-ending # replaces or checks mixed line ending.
-      - id: requirements-txt-fixer # sorts entries in requirements.txt.
-      - id: trailing-whitespace # trims trailing whitespace.
-      - id: check-executables-have-shebangs # ensures that (non-binary) executables have a shebang.
-      - id: check-shebang-scripts-are-executable # ensures that (non-binary) files with a shebang are executable.
+      - id: no-commit-to-branch
+        args: [--branch, main, --branch, master, --branch, develop]
+      - id: debug-statements
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: [--fix=lf]
 
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v2.5.1
+  # 2. Fast Python Linting & Formatting (replaces Flake8, Isort, Pylint)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.0
     hooks:
-      - id: prettier
-        files: \.(js|ts|jsx|tsx|css|less|html|json|markdown|md|yaml|yml)$
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v18.1.4
+  # 3. Fast Type Checking (Optimized for FastAPI & uv)
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.389
     hooks:
-      - id: clang-format
+      - id: pyright
+        entry: uv run pyright  # Direct link to your local uv environment
 
-  - repo: https://github.com/PyCQA/pylint
-    rev: v3.1.0
+  # 4. Spell Checking (Great for professional CRM integrations)
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.27.3
     hooks:
-      - id: pylint
+      - id: typos
 
-  - repo: local
+  # 5. uv Lock File Sync (Prevents "Broken" repos)
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.5.21
     hooks:
-      - id: cppcheck
-        name: cppcheck
-        entry: cppcheck
-        language: system
-        args:
-          [
-            --enable=all,
-            --suppress=unusedFunction,
-            --suppress=unmatchedSuppression,
-            --suppress=missingIncludeSystem,
-            --suppress=toomanyconfigs,
-            --error-exitcode=1,
-          ]
-        files: \.(c|h|cpp)$
-  - repo: https://github.com/pryorda/dockerfilelint-precommit-hooks
-    rev: v0.1.0
-    hooks:
-      - id: dockerfilelint
-      
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: "v0.931"
-    hooks:
-      - id: mypy
-
-  - repo: https://github.com/sirosen/check-jsonschema
-    rev: 0.28.2
-    hooks:
-      - id: check-github-actions
-      - id: check-github-workflows
-
-      
+      - id: uv-lock

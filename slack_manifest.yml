@@ -1,0 +1,110 @@
+_metadata:
+  major_version: 2
+  minor_version: 1
+display_information:
+  name: REHA Connect
+  description: Search HubSpot contacts, companies, and deals from Slack.
+  long_description: "REHA Connect allows you to seamlessly find and share HubSpot contacts, companies, and deals directly within Slack. Boost your team's productivity by accessing CRM data without switching apps. This integration provides powerful search capabilities, AI-driven insights, and easy collaboration for your sales and support teams, making it easier than ever to manage customer relationships efficiently. _Note: This app uses generative AI to provide summaries and insights. AI outputs may be inaccurate; please verify important information independently._"
+  background_color: "#0052CC"
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: true
+  event_subscriptions:
+    request_url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/events
+    bot_events:
+      - message.channels
+      - message.im
+      - message.groups
+      - message.mpim
+      - link_shared
+      - app_uninstalled
+      - app_home_opened
+  interactivity:
+    is_enabled: true
+    request_url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/interactions
+features:
+  unfurl_domains:
+    - hubspot.com
+    - app.hubspot.com
+    - app-eu1.hubspot.com
+  bot_user:
+    display_name: REHA Connect
+    always_online: true
+  app_home:
+    home_tab_enabled: true
+    messages_tab_enabled: true
+  slash_commands:
+    - command: /hs
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands
+      description: Smart HubSpot search
+      usage_hint: "[query]"
+      should_escape: false
+    - command: /hs-companies
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands
+      description: Search HubSpot companies
+      usage_hint: company name or domain
+      should_escape: false
+    - command: /hs-contacts
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands
+      description: Search HubSpot contacts
+      usage_hint: email, name, or query
+      should_escape: false
+    - command: /hs-deals
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands
+      description: Search HubSpot deals
+      usage_hint: deal name or keyword
+      should_escape: false
+    - command: /hs-help
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands
+      description: Show help and available commands
+      usage_hint: " "
+      should_escape: false
+    - command: /hs-leads
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands
+      description: Search HubSpot leads
+      usage_hint: lead name or email
+      should_escape: false
+    - command: /hs-reports
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands
+      description: View HubSpot reports and dashboards
+      usage_hint: " "
+      should_escape: false
+    - command: /hs-tasks
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands
+      description: Search HubSpot tasks
+      usage_hint: task name
+      should_escape: false
+    - command: /hs-tickets
+      url: https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/commands
+      description: Search HubSpot tickets
+      usage_hint: ticket subject or ID
+      should_escape: false
+  shortcuts:
+    - name: Create HubSpot Record
+      type: global
+      callback_id: create_hubspot_record
+      description: Create a new Contact, Deal, Task, or Ticket
+    - name: Create HubSpot Record
+      type: message
+      callback_id: create_hubspot_record_message
+      description: Create a new Contact, Deal, Task, or Ticket from this message
+oauth_config:
+  scopes:
+    bot:
+      - commands
+      - chat:write
+      - chat:write.public
+      - users:read
+      - users:read.email
+      - im:history
+      - channels:history
+      - groups:history
+      - mpim:history
+      - links:read
+      - links:write
+      - channels:read
+      - groups:read
+      - reactions:write
+  redirect_urls:
+    - https://derisible-jeremy-ambilaterally.ngrok-free.dev/api/slack/oauth/callback

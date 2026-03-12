@@ -1,77 +1,172 @@
+from __future__ import annotations
+
 import httpx
-import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, Callable, Optional
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
-from app.core.config import settings
+
+from app.core.logging import CorrelationAdapter, corr_id_ctx, get_logger
+
+logger = get_logger("utils.http")
+
+
+def normalize_object_type(object_type: str) -> str:
+    """Normalize a HubSpot object type to its singular form.
+
+    Converts to lowercase, handles pluralization (e.g., 'contacts' ->
+    'contact'), and maps internal numerical type IDs (e.g., '0-1' ->
+    'contact').
+
+    Args:
+        object_type: The raw object type string.
+
+    Returns:
+        Normalized singular object type.
+
+    """
+    # Map internal HubSpot type IDs used by UI extensions
+    type_map = {
+        "0-1": "contact",
+        "0-2": "company",
+        "0-3": "deal",
+        "0-4": "ticket",
+    }
+
+    object_type = type_map.get(object_type, object_type)
+    return object_type.lower().replace("ies", "y").rstrip("s")
+
+
+# Centralized singular → plural mapping for HubSpot API endpoints.
+_PLURAL_MAP: dict[str, str] = {
+    "contact": "contacts",
+    "0-1": "contacts",
+    "company": "companies",
+    "0-2": "companies",
+    "deal": "deals",
+    "0-3": "deals",
+    "ticket": "tickets",
+    "0-5": "tickets",
+}
+
+
+def pluralize_hs_type(object_type: str) -> str:
+    """Convert any HubSpot object type to plural API form.
+
+    Handles both singular names and numeric type IDs.
+
+    Args:
+        object_type: Raw object type (e.g. 'contact', '0-1').
+
+    Returns:
+        Plural API form (e.g. 'contacts').
+
+    """
+    key = object_type.lower()
+    if key in _PLURAL_MAP:
+        return _PLURAL_MAP[key]
+    # Already plural or unknown — return as-is
+    return key
+
 
 class HTTPClient:
-    """A singleton-like wrapper for httpx.AsyncClient to reuse connections."""
+    """Description:
+        Global asynchronous HTTP client wrapper with centralized configuration.
+
+    Rules Applied:
+        - Implements request-scoped correlation ID tracking via ContextVars.
+        - Provides global logging hooks for request and response traceability.
+        - Managed as a singleton AsyncClient for optimal connection pooling.
+    """
+
     _client: httpx.AsyncClient | None = None
 
     @classmethod
-    def get_client(cls) -> httpx.AsyncClient:
-        """Returns the global async client instance."""
+    def get_client(cls, *, corr_id: str | None = None) -> httpx.AsyncClient:
+        """Description:
+            Retrieves or initializes the shared httpx.AsyncClient singleton.
+
+        Args:
+            corr_id (str | None): Optional correlation ID for the current request
+                                  context.
+
+        Returns:
+            httpx.AsyncClient: The static HTTP client instance.
+
+        Rules Applied:
+            - Automatically sets the correlation ID in corr_id_ctx context.
+            - Configures default timeout and logging hooks on initialization.
+
+        """
+        # Set context for hooks
+        if corr_id:
+            corr_id_ctx.set(corr_id)
+
+        log = CorrelationAdapter(logger, corr_id or "no-corr-id")
+
         if cls._client is None or cls._client.is_closed:
-            cls._client = httpx.AsyncClient(timeout=30.0)
+            log.info("Creating new shared AsyncClient instance")
+
+            cls._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0),
+                event_hooks={
+                    "request": [cls._log_request(), cls._inject_headers()],
+                    "response": [cls._log_response()],
+                },
+            )
+        else:
+            log.debug("Reusing existing shared AsyncClient instance")
+
         return cls._client
 
+    # ---------------------------------------------------------
+    # Logging hooks (use corr_id_ctx from app.core.logging)
+    # ---------------------------------------------------------
+    @staticmethod
+    def _inject_headers():
+        async def hook(request: httpx.Request):
+            corr_id = corr_id_ctx.get("no-corr-id")
+            if corr_id != "no-corr-id":
+                request.headers["X-Correlation-ID"] = corr_id
+
+        return hook
+
+    @staticmethod
+    def _log_request():
+        async def hook(request: httpx.Request):
+            corr_id = corr_id_ctx.get("no-corr-id")
+            log = CorrelationAdapter(logger, corr_id)
+            log.info("HTTP %s %s", request.method, request.url)
+
+        return hook
+
+    @staticmethod
+    def _log_response():
+        async def hook(response: httpx.Response):
+            corr_id = corr_id_ctx.get("no-corr-id")
+            log = CorrelationAdapter(logger, corr_id)
+            log.info(
+                "HTTP %s %s → %s",
+                response.request.method,
+                response.request.url,
+                response.status_code,
+            )
+
+        return hook
+
     @classmethod
-    async def close(cls):
-        """Closes the global async client instance."""
+    async def close(cls, *, corr_id: str | None = None) -> None:
+        """Description:
+            Gracefully shuts down the shared HTTP client and its connection pool.
+
+        Args:
+            corr_id (str | None): Correlation ID for shutdown logging.
+
+        Returns:
+            None
+
+        """
+        log = CorrelationAdapter(logger, corr_id or "no-corr-id")
+
         if cls._client and not cls._client.is_closed:
+            log.info("Closing shared AsyncClient instance")
             await cls._client.aclose()
             cls._client = None
-
-async def send_slack_response(response_url: str, content: Dict[str, Any]):
-    """Sends a response back to Slack using a response_url.
-    
-    Args:
-        response_url: The URL provided by Slack to send the response to.
-        content: The JSON payload to send.
-    """
-    client = HTTPClient.get_client()
-    try:
-        response = await client.post(response_url, json=content)
-        response.raise_for_status()
-    except Exception as e:
-        # Log error or handle appropriately
-        print(f"Failed to send Slack response: {e}")
-
-async def send_slack_error(response_url: str, message: str):
-    """Sends an error message to Slack.
-    
-    Args:
-        response_url: The URL provided by Slack.
-        message: The error message to display to the user.
-    """
-    await send_slack_response(response_url, {"text": f"❌ {message}"})
-
-# --- Retry Decorator ---
-
-def hubspot_retry():
-    """Returns a tenacity retry decorator configured for HubSpot API calls."""
-    return retry(
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        stop=stop_after_attempt(5),
-        retry=retry_if_exception_type(httpx.HTTPStatusError),
-        # You could also add dynamic checking for 429 specifically if needed
-        reraise=True
-    )
-
-# --- Logging ---
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("logs/api.log")
-    ]
-)
-logger = logging.getLogger("crm-connectors")
-
-def log_webhook_payload(payload: Dict[str, Any], trace_id: str):
-    """Logs a webhook payload with a trace ID for debugging."""
-    logger.info(f"TraceID: {trace_id} | Webhook Payload: {payload}")
-
+        else:
+            log.debug("AsyncClient already closed or not initialized")

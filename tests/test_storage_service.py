@@ -122,7 +122,8 @@ async def test_get_by_portal_id(storage):
     record = _make_integration(
         provider=Provider.HUBSPOT, metadata={"portal_id": "P456"}
     )
-    storage.integrations.fetch_single = AsyncMock(return_value=record)
+    # HubSpot lookup now checks for multiple matches for health checks
+    storage.integrations.fetch_many = AsyncMock(return_value=[record])
 
     result = await storage.get_integration_by_portal_id("P456")
     assert result is record

@@ -32,5 +32,9 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
       - key: PORT
-        value: 10000 # Render default, although Dockerfile is EXPOSE 8000
+        value: 10000

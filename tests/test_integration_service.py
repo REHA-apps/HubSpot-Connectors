@@ -60,7 +60,9 @@ async def test_get_integration_caches_locally(service):
 
     assert r1 is record
     assert r2 is record
-    service.storage.get_integration.assert_awaited_once()
+    # Since we removed local caching in IntegrationService, it delegates twice.
+    # Caching is now handled at the StorageService layer.
+    assert service.storage.get_integration.await_count == 2
 
 
 # --- Resolve workspace ---
@@ -99,8 +101,7 @@ async def test_update_slack_tokens_includes_id(service):
     service.storage.get_integration = AsyncMock(return_value=record)
     service.storage.upsert_integration = AsyncMock(return_value=record)
 
-    # Pre-populate local cache
-    service._integration_cache[("ws-1", Provider.SLACK)] = record
+    # Record is fetched from storage (which uses its own internal cache)
 
     await service.update_slack_tokens(
         workspace_id="ws-1",
@@ -112,6 +113,7 @@ async def test_update_slack_tokens_includes_id(service):
     service.storage.upsert_integration.assert_awaited_once()
     payload = service.storage.upsert_integration.call_args[0][0]
     assert payload["id"] == "integ-1", "Payload must include existing integration ID"
+    # Note: credentials are merged; xoxb-new should be present
     assert payload["credentials"]["slack_bot_token"] == "xoxb-new"
     assert payload["credentials"]["refresh_token"] == "rt-new"
 

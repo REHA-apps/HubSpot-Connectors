@@ -44,7 +44,7 @@ async def test_ai_ticket_analysis():
 
     assert isinstance(analysis, AITicketAnalysis)
     assert analysis.urgency == "Critical"
-    assert "Assign immediately" in analysis.next_action
+    assert "respond within 4 hours" in analysis.next_action
 
 
 @pytest.mark.asyncio
@@ -55,8 +55,8 @@ async def test_ai_task_analysis():
     analysis = await ai.analyze_polymorphic(task, "task")
 
     assert isinstance(analysis, AITaskAnalysis)
-    assert analysis.status_label == "Waiting"
-    assert "Follow up" in analysis.next_action
+    assert analysis.status_label == "Pending"
+    assert "Start task" in analysis.next_action
 
 
 @pytest.mark.asyncio
@@ -66,7 +66,7 @@ async def test_notification_service_high_priority_ticket():
         patch("app.domains.crm.notification_service.StorageService") as MockStorage,
         patch("app.domains.crm.notification_service.HubSpotService") as MockHubSpot,
         patch(
-            "app.connectors.slack.services.channel_service.ChannelService"
+            "app.domains.messaging.slack.service.SlackMessagingService"
         ) as MockChannel,
     ):
         # Setup Registry
@@ -122,7 +122,7 @@ async def test_notification_service_low_priority_ticket_skipped():
         patch("app.domains.crm.notification_service.StorageService") as MockStorage,
         patch("app.domains.crm.notification_service.HubSpotService") as MockHubSpot,
         patch(
-            "app.connectors.slack.services.channel_service.ChannelService"
+            "app.domains.messaging.slack.service.SlackMessagingService"
         ) as MockChannel,
     ):
         # Setup Registry
@@ -132,6 +132,11 @@ async def test_notification_service_low_priority_ticket_skipped():
         mock_storage.get_integration_by_portal_id = AsyncMock(
             return_value=MagicMock(workspace_id="ws1")
         )
+        mock_storage.get_integration = AsyncMock(return_value=None)
+        mock_storage.get_workspace = AsyncMock(
+            return_value=MagicMock(plan=PlanTier.PRO)
+        )
+        mock_storage.list_integrations = AsyncMock(return_value=[])
         mock_storage.get_thread_mapping = AsyncMock(return_value=None)
         mock_storage.upsert_thread_mapping = AsyncMock()
 

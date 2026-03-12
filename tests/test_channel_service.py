@@ -20,7 +20,9 @@ async def test_send_slack_card(corr_id, integration_service, slack_integration):
         "properties": {"firstname": "Alice"},
     }
 
-    with patch.object(service, "send_message", new=AsyncMock()) as mock_send:
+    with patch.object(
+        service, "send_message", new=AsyncMock(return_value={"ts": "123"})
+    ) as mock_send:
         await service.send_card(
             workspace_id="test_workspace",
             obj=fake_obj,

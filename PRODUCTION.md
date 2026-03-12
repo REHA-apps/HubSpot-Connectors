@@ -1,12 +1,12 @@
-# Production Deployment Guide: rehaapps.com
+# Production Deployment Guide: rehaapp.com
 
 This guide provides step-by-step instructions for hosting the **REHA Connect** platform and its **Homepage** in production using Render, Supabase, Stripe, and Cloudflare.
 
 ## 🏗️ Architecture Overview
 
-- **Domain Management**: Cloudflare (`rehaapps.com`)
-- **Frontend**: Render Static Site (`rehaapps.com`, `www.rehaapps.com`)
-- **Backend API**: Render Web Service (Docker) (`api.rehaapps.com`)
+- **Domain Management**: Cloudflare (`rehaapp.com`)
+- **Frontend**: Render Static Site (`rehaapp.com`, `www.rehaapp.com`)
+- **Backend API**: Render Web Service (Docker) (`api.rehaapp.com`)
 - **Database**: Supabase (PostgreSQL + Auth)
 - **Payments**: Stripe
 
@@ -14,7 +14,7 @@ This guide provides step-by-step instructions for hosting the **REHA Connect** p
 
 ## 🌐 Step 1: Domain & DNS (Cloudflare)
 
-1.  **Register/Transfer Domain**: Ensure `rehaapps.com` is managed in Cloudflare.
+1.  **Register/Transfer Domain**: Ensure `rehaapp.com` is managed in Cloudflare.
 2.  **DNS Records**:
     - You will add CNAME records later once Render provides the hostnames.
     - Ensure "Proxy status" is set to **Proxied** (orange cloud) for best performance/security.
@@ -46,7 +46,7 @@ This guide provides step-by-step instructions for hosting the **REHA Connect** p
     - Copy the `Secret key` (starting with `sk_live_` for prod). This is your `STRIPE_SECRET_KEY`.
 4.  **Webhooks**:
     - After hosting the API, go to **Webhooks** > **Add endpoint**.
-    - URL: `https://api.rehaapps.com/api/stripe/webhook` (update this after Step 4).
+    - URL: `https://api.rehaapp.com/api/stripe/webhook` (update this after Step 4).
     - Select events: `checkout.session.completed`, `customer.subscription.updated/deleted`.
     - Copy the `Signing secret` (`whsec_...`). This is your `STRIPE_WEBHOOK_SECRET`.
 
@@ -62,7 +62,7 @@ This guide provides step-by-step instructions for hosting the **REHA Connect** p
 3.  **Environment Variables**:
     - `ENV`: `prod`
     - `PORT`: `10000`
-    - `API_BASE_URL`: `https://api.rehaapps.com`
+    - `API_BASE_URL`: `https://api.rehaapp.com`
     - `SUPABASE_URL`: (From Step 2)
     - `SUPABASE_KEY`: (From Step 2)
     - `HUBSPOT_CLIENT_ID` / `SECRET`: (From HubSpot Developer Portal)
@@ -71,7 +71,7 @@ This guide provides step-by-step instructions for hosting the **REHA Connect** p
     - `OPENAI_API_KEY`: (From OpenAI Dashboard)
 4.  **Custom Domain**:
     - In Render, go to **Settings** > **Custom Domains**.
-    - Add `api.rehaapps.com`.
+    - Add `api.rehaapp.com`.
     - Update DNS in Cloudflare with the provided CNAME.
 
 ---
@@ -83,31 +83,31 @@ This guide provides step-by-step instructions for hosting the **REHA Connect** p
     - **Build Command**: (Leave empty if it's pure HTML)
     - **Publish Directory**: `.` (or the folder containing `index.html`)
 3.  **Custom Domain**:
-    - Add `rehaapps.com` and `www.rehaapps.com`.
+    - Add `rehaapp.com` and `www.rehaapp.com`.
     - Update DNS in Cloudflare with the provided settings.
 
 ---
 
 ## 🔄 Step 6: Update App Redirects
 
-Now that the site is live at `api.rehaapps.com`, you **must** update the OAuth callback URLs in the developer portals:
+Now that the site is live at `api.rehaapp.com`, you **must** update the OAuth callback URLs in the developer portals:
 
 ### 🟠 HubSpot Developer Portal
 1.  Go to your App Settings > **Auth**.
 2.  Update **Redirect URL** to:
-    - `https://api.rehaapps.com/api/hubspot/oauth/callback`
+    - `https://api.rehaapp.com/api/hubspot/oauth/callback`
 
 ### 🔵 Slack App Settings
 1.  Go to **OAuth & Permissions**.
 2.  Update **Redirect URLs** to:
-    - `https://api.rehaapps.com/api/slack/oauth/callback`
+    - `https://api.rehaapp.com/api/slack/oauth/callback`
 3.  Go to **Event Subscriptions** & **Interactivity**:
-    - Update Request URLs to `https://api.rehaapps.com/api/slack/events` and `https://api.rehaapps.com/api/slack/interactivity`.
+    - Update Request URLs to `https://api.rehaapp.com/api/slack/events` and `https://api.rehaapp.com/api/slack/interactivity`.
 
 ---
 
 ## ✅ Final Verification
 
-1.  Visit `https://rehaapps.com` to ensure the homepage loads.
-2.  Visit `https://api.rehaapps.com/api/health` to verify the API is up.
+1.  Visit `https://rehaapp.com` to ensure the homepage loads.
+2.  Visit `https://api.rehaapp.com/api/health` to verify the API is up.
 3.  Perform a test installation from the homepage to verify the OAuth flow to the new production URLs.

@@ -211,4 +211,4 @@ def test_renderer_hubspot(builder, contact_analysis):
 
     assert hubspot_payload["objectId"] == "123"
     assert hubspot_payload["title"] == "Alice"
-    assert len(hubspot_payload["properties"]) > 0
+    assert "metrics" in hubspot_payload

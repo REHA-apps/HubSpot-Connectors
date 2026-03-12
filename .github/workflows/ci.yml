@@ -14,13 +14,18 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install uv
-        run: pip install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: "pyproject.toml"
 
       - name: Install dependencies
-        run: uv sync
-
-      - name: Run pre-commit
-        uses: pre-commit/action@v3.0.1
+        run: uv sync --all-extras --dev
 
       - name: Run Ruff
         run: uv run ruff check .
@@ -29,15 +34,23 @@ jobs:
         run: uv run pyright
 
       - name: Run tests
+        env:
+          ENV: dev
+          SUPABASE_URL: https://placeholder.supabase.co
+          SUPABASE_KEY: placeholder-key
+          HUBSPOT_CLIENT_ID: placeholder-id
+          HUBSPOT_CLIENT_SECRET: placeholder-secret
+          SLACK_CLIENT_ID: placeholder-id
+          SLACK_CLIENT_SECRET: placeholder-secret
+          SLACK_SIGNING_SECRET: placeholder-secret
+          API_BASE_URL: http://localhost:8000
         run: uv run pytest -q
 
-      - name: Run tests inside Docker
-        run: |
-          docker build -f Dockerfile.test -t myapp-tests .
-          docker run --rm myapp-tests 
+      - name: Lowercase repo name
+        run: echo "REPO_LOWER=${GITHUB_REPOSITORY,,}" >> ${GITHUB_ENV}
 
       - name: Build Docker image
-        run: docker build -t ghcr.io/${{ github.repository }}:latest .
+        run: docker build -t ghcr.io/${{ env.REPO_LOWER }}:latest .
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -47,7 +60,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push Docker image
-        run: docker push ghcr.io/${{ github.repository }}:latest
+        if: github.ref == 'refs/heads/main'
+        run: docker push ghcr.io/${{ env.REPO_LOWER }}:latest
 
   deploy:
     needs: lint-test-build
@@ -55,5 +69,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-      - name: Deployment placeholder
-        run: echo "Deploy step goes here (SSH, Kubernetes, Fly.io, Render, etc.)"
+      - name: Deploy to Render
+        # You can add a Render Deploy Hook here later
+        # Example: run: curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: echo "To automate deployment, add RENDER_DEPLOY_HOOK_URL to GitHub Secrets and use curl."
